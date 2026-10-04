@@ -1,0 +1,13 @@
+# Independent architecture review disposition
+
+This document records corrections made after an independent cross-document audit of the design package. It is not evidence that any product control has been implemented or tested.
+
+| Finding | Disposition | Durable contract / verification |
+|---|---|---|
+| Hostile pull-request code could share a kernel or inherit useful node identity under a namespace-only threat model. | Accepted. Hostile candidates require a pinned, qualified sandbox RuntimeClass, dedicated tainted worker pool, no useful node identity, no fallback to ordinary runtime, plus escape/noisy-neighbor tests. | `ARCHITECTURE.md`, `ENVIRONMENTS.md`, `SECURITY.md`, `CHECKLIST.md` G2.7, `TESTING.md`; Q-18 tracks qualification. |
+| Temporal API authorization alone does not impose workflow-start or active-workflow quotas. | Accepted. All endpoint access crosses a trusted authz boundary; direct endpoint access is blocked; a race-safe admission gateway owns reservations and metering. If enforceable caps are unavailable, disable that execution profile. | `ENVIRONMENTS.md`, `CHECKLIST.md` G2.8, `TESTING.md`; Q-19 tracks qualification. |
+| Tags or an in-cluster agent cannot promise cleanup after target-cluster or management-plane loss. | Accepted. The customer connector contract calls for a separate management/watchdog failure domain and fault-specific removal evidence. Cloud/native tags are accounting metadata, not TTL. Unsupported outage cases stay unresolved and are disclosed. | `PRODUCT-SPEC.md`, `ARCHITECTURE.md`, `CHECKLIST.md` G9.3, `TESTING.md`; Q-20 tracks qualification. |
+| A timed-out cloud operation may have succeeded and race with a replacement command. | Accepted. Durable action state includes `uncertain`; serialize conflicting native mutations and observe/terminate prior operation before proceeding. A local lease is not cloud API fencing. | `PRODUCT-SPEC.md`, `CHECKLIST.md` G1.3/G9.2, `TESTING.md`. |
+| Sign-in/session/recovery and legal/privacy readiness were described but not independently tracked as 1.0 launch tasks. | Accepted. Separate identity and jurisdiction-scoped privacy/legal tasks are required before live data. | `CHECKLIST.md` G7.10–G7.11 and `../shared/SAAS-FOUNDATION.md`. |
+
+The Kubernetes and Temporal statements are grounded in the primary references in [`../research/SOURCES.md`](../research/SOURCES.md). Their documentation explains available primitives; project-specific security and quota guarantees still require deployed qualification. No cloud isolation level or cleanup behavior is claimed until demonstrated in the selected supported profile.
