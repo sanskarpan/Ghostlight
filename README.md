@@ -27,6 +27,7 @@ Ghostlight is a new platform design. Its controller accepts a signed immutable p
 | [TESTING.md](docs/TESTING.md) | Controller/model/security/cloud qualification |
 | [QUALITY-REVIEW.md](docs/QUALITY-REVIEW.md) | Independent audit findings, dispositions and verification links |
 | [CHECKLIST.md](docs/CHECKLIST.md) | Build order and required release evidence |
+| [ISSUE-TRACKING.md](docs/ISSUE-TRACKING.md) | Direct links from every checklist item and gate to its phase-tracked issue |
 | [DECISIONS.md](docs/DECISIONS.md) | Architecture decisions and rejected alternatives |
 
 Use [shared contracts](shared/CONTRACTS.md) for recipe, health, telemetry and exact candidate identity. Build Keel's first vertical slice before investing in full cluster scaling and chaos.
