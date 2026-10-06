@@ -59,14 +59,16 @@ jobs:
 
       # Every checklist item must have exactly one indexed issue, and every
       # issue must map back to a checklist item. Drift here silently loses work.
+      #
+      # Phase gates are written as "G0 gate:" in the checklist and "G0-GATE" in
+      # the index, so the suffix is normalised per line before comparing.
       - name: Verify checklist and issue index agree
         run: |
           set -euo pipefail
           checklist_ids=$(grep -oE '^- \[ \] G[0-9Q]+(\.[0-9]+)?' docs/CHECKLIST.md \
             | sed -E 's/^- \[ \] //' | sort)
           index_ids=$(grep -oE '^\| `G[0-9Q]+(\.[0-9]+)?(-GATE)?`' docs/ISSUE-TRACKING.md \
-            | tr -d '|` ' | sort)
-          index_ids="${index_ids/-GATE/}"
+            | sed -E 's/^\| `//; s/`$//; s/-GATE$//' | sort)
           echo "checklist items: $(echo "$checklist_ids" | wc -l)"
           echo "index rows:      $(echo "$index_ids" | wc -l)"
           if [ "$checklist_ids" != "$index_ids" ]; then
@@ -74,6 +76,7 @@ jobs:
             diff <(echo "$checklist_ids") <(echo "$index_ids") || true
             exit 1
           fi
+          echo "checklist and index agree"
 
       # A duplicated table row or paragraph in the specification set is a
       # generation artefact, not an intentional restatement.
