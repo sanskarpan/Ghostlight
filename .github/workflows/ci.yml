@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Race detection is part of the contract: the fake provider is driven
+      # concurrently by duplicate and reordered delivery scenarios, and a data
+      # race there would make those results meaningless.
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Test coverage
+        run: go test -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+  docs:
+    name: document integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every checklist item must have exactly one indexed issue, and every
+      # issue must map back to a checklist item. Drift here silently loses work.
+      - name: Verify checklist and issue index agree
+        run: |
+          set -euo pipefail
+          checklist_ids=$(grep -oE '^- \[ \] G[0-9Q]+(\.[0-9]+)?' docs/CHECKLIST.md \
+            | sed -E 's/^- \[ \] //' | sort)
+          index_ids=$(grep -oE '^\| `G[0-9Q]+(\.[0-9]+)?(-GATE)?`' docs/ISSUE-TRACKING.md \
+            | tr -d '|` ' | sort)
+          index_ids="${index_ids/-GATE/}"
+          echo "checklist items: $(echo "$checklist_ids" | wc -l)"
+          echo "index rows:      $(echo "$index_ids" | wc -l)"
+          if [ "$checklist_ids" != "$index_ids" ]; then
+            echo "Checklist and issue index have drifted."
+            diff <(echo "$checklist_ids") <(echo "$index_ids") || true
+            exit 1
+          fi
+
+      # A duplicated table row or paragraph in the specification set is a
+      # generation artefact, not an intentional restatement.
+      - name: Detect duplicated ADR rows
+        run: |
+          set -euo pipefail
+          dupes=$(grep -oE '^\| G-0[0-9]{2}' docs/DECISIONS.md | sort | uniq -d || true)
+          if [ -n "$dupes" ]; then
+            echo "Duplicated ADR rows in DECISIONS.md:"
+            echo "$dupes"
+            exit 1
+          fi

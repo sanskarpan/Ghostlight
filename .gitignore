@@ -5,3 +5,12 @@
 *.key
 secrets/
 .DS_Store
+
+# Go build output
+/ghlight
+/bin/
+coverage.out
+*.test
+
+# Local embedded PostgreSQL data used by the schema tests
+.pgdata/
