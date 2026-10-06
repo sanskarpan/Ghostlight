@@ -1,12 +1,34 @@
 # Ghostlight checklist issue index
 
-This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its GitHub issue. It contains 87 issues, including phase gates. Issues are sequenced by phase; no milestone has a due date, and phase order is not a delivery-date promise.
+This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its GitHub issue. It contains 99 issues, including phase gates. Issues are sequenced by phase; no milestone has a due date, and phase order is not a delivery-date promise.
+
+Items marked **Blocked by** in the checklist are dependencies, not ordering suggestions: where the phase numbering and the stated dependency disagree, the dependency wins. See [`QUALIFICATION-PLAN.md`](QUALIFICATION-PLAN.md) and [`SCOPE-RETUNE.md`](SCOPE-RETUNE.md).
+
+Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull request, which shares the counter with issues, so the first issue is #2. Issues #90-#101 are the GQ qualification phase and the six added coverage items.
+
+## GQ — Qualification spikes (blocking, precedes G0 commitment)
+
+| Checklist ID | Type | Checklist item | GitHub issue |
+|---|---|---|---|
+| `GQ.1` | task | GQ.1 Close Q-18: measure sandbox runtime feasibility. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/90) |
+
+| `GQ.2` | task | GQ.2 Close Q-19: measure Temporal capacity enforcement. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/91) |
+
+| `GQ.3` | task | GQ.3 Close Q-13: produce the per-preview cost model and the approved commercial packaging. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/92) |
+
+| `GQ.4` | task | GQ.4 Close Q-10, Q-11, Q-14 and G-024/G-025: select the payment platform and identity provider. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/93) |
+
+| `GQ.5` | task | GQ.5 Close Q-17: run the core-journey usability and accessibility study. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/94) |
+
+| `GQ.6` | task | GQ.6 Close Q-06 and Q-16 research: dependency isolation feasibility and post-restore reconciliation. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/95) |
+
+| `GQ-GATE` | gate | GQ qualification gate: each item records a dated go/no-go decision with owner, evidence and resulting ADR. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/96) |
 
 ## G0 — Foundation and trust
 
 | Checklist ID | Type | Checklist item | GitHub issue |
 |---|---|---|---|
-| `G0.1` | task | G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/2) |
+| `G0.1` | task | G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas. **Blocked by: GQ.1, GQ.2.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/2) |
 
 | `G0.2` | task | G0.2 Create platform Go modules, API/auth, validated catalog/config and platform database schema. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/3) |
 
@@ -16,7 +38,9 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 
 | `G0.5` | task | G0.5 Create least-privilege identities for controller, build, allocator, runner, runtime, experiment, janitor and signer. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/6) |
 
-| `G0.6` | task | G0.6 Validate shared recipe/health/gate contracts against Keel fixtures. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/7) |
+| `G0.6` | task | G0.6 Validate shared recipe/health/gate contracts against Keel fixtures. `policy_digest` must be present in the recipe and resolvable from the first schema. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/7) |
+
+| `G0.7` | task | G0.7 Define platform supply-chain policy: pinned base/AMI images, image provenance and SBOM, CVE/patch SLA for host and sandbox guest kernel, third-party base-image allowlist and pinned-action upgrade path. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/97) |
 
 | `G0-GATE` | gate | G0 gate: untrusted build cannot obtain provisioning/signing/production credentials. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/8) |
 
@@ -56,9 +80,11 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 
 | `G2.6` | task | G2.6 Run hostile sibling-preview/fork tests with actual managed-service identities. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/21) |
 
-| `G2.7` | task | G2.7 Prototype/pin a hardened candidate sandbox RuntimeClass and dedicated tainted node pool, remove useful worker node identity and prove no fallback/admission on unsupported runtime; close Q-18. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/22) |
+| `G2.7` | task | G2.7 Implement the sandbox RuntimeClass, dedicated tainted pool and no-useful-node-identity posture chosen in GQ.1; prove no fallback/admission on unsupported runtime. **Blocked by: GQ.1.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/22) |
 
-| `G2.8` | task | G2.8 Enforce Temporal API method authorization, direct-endpoint blocking, dedicated start/worker identities and race-safe per-env quota gateway; close Q-19. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/23) |
+| `G2.8` | task | G2.8 Implement the Temporal enforcement mechanism chosen in GQ.2 (quota gateway, dedicated instance, or capability denial scoped to the dependency). **Blocked by: GQ.2.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/23) |
+
+| `G2.9` | task | G2.9 Own preview URL delivery: wildcard DNS, certificate issuance/renewal/revocation, the ACME/API identity, HSTS and origin binding. Blocks G7.6. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/98) |
 
 | `G2-GATE` | gate | G2 gate: candidate runtime/worker, namespace/topic/prefix boundaries are proven at deployed service authorization and complete teardown; unsupported profile fails closed. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/24) |
 
@@ -78,6 +104,8 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 | `G3.5` | task | G3.5 Implement GitHub check/deployment reporting outbox and current-head verification. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/29) |
 
 | `G3.6` | task | G3.6 Invalidate/cancel gates on updates/expiry/close and protect attestation integrity. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/30) |
+
+| `G3.7` | task | G3.7 Install SLO instrumentation, metrics pipeline and alerting at this phase rather than G6.4, because G3-G5 evidence depends on it. Closes Q-09. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/99) |
 
 | `G3-GATE` | gate | G3 gate: candidate cannot fake a pass and stale results cannot qualify new code/config. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/31) |
 
@@ -130,9 +158,11 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 
 | `G6.3` | task | G6.3 Exercise platform upgrades against old module/state/runner versions. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/48) |
 
-| `G6.4` | task | G6.4 Install SLO alerts, runbooks, rotation, on-call ownership and exception policy. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/49) |
+| `G6.4` | task | G6.4 Install runbook-backed operator tooling, key rotation, on-call ownership, severity definitions, customer incident communications and postmortems. Instrumentation moved to G3.7. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/49) |
 
 | `G6.5` | task | G6.5 Publish Ghostlight teardown with measured provisioning/scaling/recovery/cost data. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/50) |
+
+| `G6.6` | task | G6.6 Define and enforce the public API lifecycle: OpenAPI publication, compatibility window, deprecation/sunset policy and consumer notification. The CLI inherits the same policy. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/100) |
 
 | `G6-GATE` | gate | G6 technical gate: signed fleet/security/cleanup/recovery evidence; current candidate contract and operational owner ready. Paid 1.0 also requires G7. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/51) |
 
@@ -157,11 +187,13 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 
 | `G7.8` | task | G7.8 Implement notices/comments/help/support/status, bounded import/export/audit and resource-verified organization closure; G-F13/G-F14. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/59) |
 
-| `G7.9` | task | G7.9 Qualify sandbox billing/email, economic/pricing assumptions, design-partner activation, keyboard/narrow-screen review/abort and org privacy tests; G-F01–G-F14. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/60) |
+| `G7.9` | task | G7.9 Qualify sandbox billing/email, economic/pricing assumptions against the GQ.3 model, org privacy tests and an automated WCAG 2.2 AA gate over the authenticated review and abort path. Design-partner activation split out to G7.12. **Blocked by: GQ.3, GQ.4.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/60) |
 
 | `G7.10` | task | G7.10 Ship first-party identity bootstrap/sign-in, verified email, session lifecycle/revocation, owner MFA, recovery and lockout protections; test account recovery and takeover boundaries. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/61) |
 
-| `G7.11` | task | G7.11 Complete jurisdiction-scoped privacy/legal launch review: terms, privacy notice, DPA/subprocessor disclosures, breach response, rights-request and retention workflows; document accountable operational owners before real customer data. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/62) |
+| `G7.11` | task | G7.11 Complete jurisdiction-scoped privacy/legal launch review: terms, privacy notice, DPA/subprocessor disclosures, breach response, rights-request and retention workflows; document accountable operational owners before real customer data. Gates G7.12. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/62) |
+
+| `G7.12` | task | G7.12 Activate design partners and qualify the reviewer journey, economic assumptions, keyboard-narrow-screen review/abort and the published support/limitation matrix. **Blocked by: G7.9, G7.10, G7.11.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/101) |
 
 | `G7-GATE` | gate | G7 paid 1.0 gate: G0–G6 critical gates plus signup->repo qualification->preview->independent review->verified cleanup, SaaS subscription and accessible customer lifecycle pass. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/63) |
 
@@ -170,15 +202,15 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 
 | Checklist ID | Type | Checklist item | GitHub issue |
 |---|---|---|---|
-| `G8.1` | task | G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/64) |
+| `G8.1` | task | G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15. **Blocked by: G8.7, G8.8.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/64) |
 
 | `G8.2` | task | G8.2 Implement bounded topology DAG/service/network recipes and independently qualified templates; G-F16. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/65) |
 
 | `G8.3` | task | G8.3 Add versioned synthetic fixtures/snapshots, current-generation reset and fresh-identity clone; G-F17/G-F19. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/66) |
 
-| `G8.4` | task | G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/67) |
+| `G8.4` | task | G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18. Closes Q-15. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/67) |
 
-| `G8.5` | task | G8.5 Implement compatible candidate/baseline comparison with observation/confidence checks; G-F20. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/68) |
+| `G8.5` | task | G8.5 Implement compatible candidate/baseline comparison with observation/confidence checks; G-F20. Deferred behind a post-revenue gate per SCOPE-RETUNE.md. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/68) |
 
 | `G8.6` | task | G8.6 Implement bounded failure-replay recipes and investigation workspace without live external effects; G-F21. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/69) |
 
@@ -197,7 +229,7 @@ This index maps every unchecked item in [`CHECKLIST.md`](CHECKLIST.md) to its Gi
 |---|---|---|---|
 | `G9.1` | task | G9.1 Qualify SSO/SCIM/project groups and customer recovery; G-F25. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/74) |
 
-| `G9.2` | task | G9.2 Implement one qualified customer-preview-account connector, signed ordered commands/receipts, persistent action ledger and native mutation locks. Unknown outcome blocks conflicting updates/destroys until observation/termination; G-F26. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/75) |
+| `G9.2` | task | G9.2 Implement one qualified customer-preview-account connector, signed ordered commands/receipts, persistent action ledger and native mutation locks. Unknown outcome blocks conflicting updates/destroys until observation/termination; G-F26. **Blocked by: G9.3** — per the project's own qualification rule a connector cannot be qualified until its management failure domain and bounded removal path exist. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/75) |
 
 | `G9.3` | task | G9.3 Qualify a separate management/watchdog failure domain from the target cluster, independent bounded cleanup for each supported fault, provider/API/clock failure reporting, customer emergency/disconnect path. Tags are not TTL; unsupported failure classes remain unresolved; close Q-20; G-F26. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/76) |
 

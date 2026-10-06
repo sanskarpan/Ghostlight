@@ -26,6 +26,17 @@ One preview includes the application's entire dependency contract with isolated 
 
 The platform supports a reviewed product catalog. It does not run arbitrary PR-supplied Terraform, create arbitrary IAM policies, accept privileged Helm hooks, expose cluster admin or operate production accounts through a preview identity. A release gate records evidence; production promotion follows a separate authorized deployment workflow.
 
+### 3.1 Admission boundary at 1.0
+
+Accepted 6 October 2026 (ADR G-029). At 1.0 Ghostlight admits a pull request only when the repository is bound to the customer's organization through a verified GitHub installation **and** the author is a principal with write access to that repository. Fork and external-contributor previews are not admitted. Two consequences the product must state plainly rather than obscure:
+
+- This narrows *who can submit code*. It does **not** make admitted code trusted — same-repository code from a compromised maintainer token or a malicious insider remains hostile and is still admitted.
+- The sandbox RuntimeClass is deferred with the fork restriction, so **1.0 has no microVM boundary**. Containment is namespace, network, egress, resource, identity and account isolation with no useful node identity. This is weaker than the target posture, is recorded as an accepted residual risk with a named owner and re-review date, and appears in the customer-facing support/limitation matrix.
+
+The re-entry trigger restoring the sandbox requirement before admission is defined in SECURITY.md 1.1. External contributors can still produce sandbox builds locally; they simply receive no cloud-admin access and no automatically provisioned preview.
+
+Users: developers requesting previews, reviewers inspecting evidence, platform operators managing quotas/isolation and reliability engineers authoring fault experiments. Pull-request authors do not receive cloud-admin access. External contributors can produce sandbox builds but cannot automatically access trusted deployment credentials or real external providers.
+
 ## 4. Success criteria
 
 - Environment creation/update/cleanup is idempotent across duplicate events, controller restarts and partially successful external calls.

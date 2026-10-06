@@ -4,10 +4,15 @@ Preview environments, queue-driven capacity and controlled reliability experimen
 
 Ghostlight is a new platform design. Its controller accepts a signed immutable product recipe, allocates an isolated stack in a separate preview account, deploys a specific candidate, runs independent gates, reports evidence and cleans up all owned resources. It is not a general cloud-admin API for pull-request code.
 
+**At 1.0 (accepted 6 October 2026) Ghostlight admits only pull requests from repositories bound through a verified installation, authored by a principal with write access.** Fork and external-contributor previews are not admitted, and the sandbox RuntimeClass is deferred with them — which reduces 1.0 containment strength. Read [SECURITY.md §1.1](docs/SECURITY.md) before making any isolation claim, and [SCOPE-RETUNE.md](docs/SCOPE-RETUNE.md) for what gates revenue.
+
 ## Document map
 
 | File | Contents |
 |---|---|
+| [QUALIFICATION-PLAN.md](docs/QUALIFICATION-PLAN.md) | Blocking pre-build spikes, measured findings and go/no-go criteria |
+| [COST-MODEL.md](docs/COST-MODEL.md) | Per-preview cost model, meter definitions and commercial packaging |
+| [SCOPE-RETUNE.md](docs/SCOPE-RETUNE.md) | Which phases gate the first paying customer and which sit behind a revenue gate |
 | [PRODUCT-STRATEGY.md](docs/PRODUCT-STRATEGY.md) | Customers, value, differentiated evidence and independent SaaS business |
 | [FEATURE-CATALOG.md](docs/FEATURE-CATALOG.md) | 36 versioned customer/platform capabilities |
 | [JOURNEYS.md](docs/JOURNEYS.md) | Admin, developer, reviewer, reliability and enterprise experiences |

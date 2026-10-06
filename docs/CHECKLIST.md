@@ -2,25 +2,42 @@
 
 All tasks are pending. On completion record owner, PR/commit, profile/version and evidence path. Shared contract v1.1 is normative. G7 begins alongside G0/G1; stable phase numbering does not defer SaaS until after technical completion. ROADMAP.md defines paid launch, team, enterprise and discovery gates. The original topics are minimum scope.
 
+Items marked **Blocked by** must not start until the named item's evidence exists. Stable phase numbering is not permission to start an item before its stated dependency. Where the numbering and the dependency conflict, the dependency wins and the numbering is a reporting label only.
+
+## GQ — Qualification spikes (blocking, precedes G0 commitment)
+
+Purpose: answer the questions that decide whether the expensive parts of G2/G4 are buildable, affordable and sellable. GQ exists because G2.7, G2.8 and G4.6 previously committed irreversible cost decisions before anything measured them. No G2.7 or G2.8 implementation work starts before GQ.1/GQ.2 record a go/no-go ADR. Detail in QUALIFICATION-PLAN.md.
+
+**1.0 critical path (accepted 6 October 2026, ADR G-027):** GQ.2, GQ.3, GQ.4, GQ.5, GQ.6 are 1.0 prerequisites. **GQ.1 is deferred behind a post-revenue gate** together with the sandbox RuntimeClass (G2.7) and the capacity/chaos phases (G4/G5), because 1.0 admits only pull requests from bound repositories authored by write-access principals (ADR G-029). GQ.1 remains required before any candidate outside a bound repository is admitted; its trigger is in SECURITY.md 1.1.
+
+- [ ] GQ.1 Close Q-18: measure sandbox runtime feasibility. **Deferred from the 1.0 critical path by ADR G-027/G-029; gated on the re-entry trigger in SECURITY.md 1.1, not on a date.** Still required before any candidate outside a bound repository is admitted. Record measured per-pod host overhead at the preview-small request size, nested-virtualization CPU penalty, warm/cold pod-ready latency, node-boot p95, and the resulting aggregate vCPU and memory requirement for 20 concurrent previews. Select the runtime class, VMM, instance families and node-provisioning path. Record the compute cost per preview and the revised worker cap. Evidence must include a successful guest-kernel check and a 100% `/dev/kvm` presence check. Go/no-go ADR required.
+- [ ] GQ.2 Close Q-19: measure Temporal capacity enforcement. Prove whether the hosted service can server-enforce a per-namespace active-workflow cap. If not, prototype the gateway-owned durable reservation, the child-workflow ownership shape and the fencing/reuse handling, and measure Actions-per-workflow, steady APS and worst-case hostile-environment cost. Record whether the requirement is reframed as a per-environment Actions-per-hour budget. Go/no-go ADR required.
+- [ ] GQ.3 Close Q-13: produce the per-preview cost model and the approved commercial packaging. Measure fixed foundation cost, variable per-preview cost (compute, dedicated dependencies, storage, egress), experiment cost and provider spend separately, at the qualified preview-small profile and at worst case. Produce approved meter definitions, unit prices, per-plan included allowances and margin targets. Publish a bounded worst-case monthly customer ceiling. Evidence: COST-MODEL.md with measured inputs, plus design-partner willingness-to-pay interviews.
+- [ ] GQ.4 Close Q-10, Q-11, Q-14 and G-024/G-025: select the payment platform and identity provider. Confirm metered-billing semantics, event-ordering/reconciliation contract, tax and invoicing posture, delivery and privacy posture, MFA/session/recovery coverage, and the enterprise SSO/SCIM path. Record provider-specific quotas, cost and the migration trigger to the runner-up. Evidence: recorded ADR and a working sandbox integration of checkout, portal, webhook verification, sign-in, MFA, recovery and revocation.
+- [ ] GQ.5 Close Q-17: run the core-journey usability and accessibility study with representative participants. Measure time-to-first-preview, assisted-completion rate, and an automated WCAG 2.2 AA gate over the authenticated review and abort path. Publish the differentiated-value go/no-go for later product bets and a published support/limitation matrix for every unproven isolation or cleanup claim.
+- [ ] GQ.6 Close Q-06 and Q-16 research: qualify preview dependency isolation feasibility per managed service (PostgreSQL, Kafka, Temporal, Redis, S3, identity) and the customer-connector identity/native-permission/offline-safety model. Enumerate, per resource type, whether ownership tags and provider-native inventory are sufficient for post-restore reconciliation, and which types are unsupported. Evidence: two concurrent malicious previews cannot access one another, measured at deployed service authorization.
+- [ ] GQ qualification gate: GQ.2 through GQ.6 each record a dated go/no-go decision with owner, evidence path and the resulting ADR. G2.8, G4 and G7.3/G7.9 may not begin against an unresolved or assumed-answer qualification. GQ.1 is gated separately per the note above.
+
 ## G0 — Foundation and trust
 
-- [ ] G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas.
+- [ ] G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas. **Blocked by: GQ.1, GQ.2** (instance families and runtime are selected there).
 - [ ] G0.2 Create platform Go modules, API/auth, validated catalog/config and platform database schema.
 - [ ] G0.3 Define environment/generation/action/resource state model and independent reference tests.
-- [ ] G0.4 Establish preview account, protected runner build/provenance, artifact/state/evidence KMS boundaries.
+- [ ] G0.4 Establish preview account, protected runner build/provenance, artifact/state/evidence KMS boundaries, evidence signing algorithm/trust root and key-rotation period.
 - [ ] G0.5 Create least-privilege identities for controller, build, allocator, runner, runtime, experiment, janitor and signer.
-- [ ] G0.6 Validate shared recipe/health/gate contracts against Keel fixtures.
+- [ ] G0.6 Validate shared recipe/health/gate contracts against Keel fixtures. `policy_digest` must be present in the recipe and resolvable from the first schema; a candidate identity that cannot bind a policy digest cannot be gated.
+- [ ] G0.7 Define platform supply-chain policy: pinned base/AMI images, image provenance and SBOM requirements, CVE/patch SLA for host kernel and sandbox guest kernel, third-party base-image allowlist, and the pinned-action/dependency upgrade path. An untrusted preview may not select an arbitrary base image.
 - [ ] G0 gate: untrusted build cannot obtain provisioning/signing/production credentials.
 
 ## G1 — Durable local lifecycle
 
-- [ ] G1.1 Implement verified event inbox, request idempotency and current-PR reconciliation.
+- [ ] G1.1 Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.**
 - [ ] G1.2 Implement desired/observed lifecycle, generation fencing and durable action intents.
 - [ ] G1.3 Add observe-before-retry for uncertain native operations and per-environment mutation serialization.
-- [ ] G1.4 Implement quotas/TTL reservations and extension/destroy authorization.
-- [ ] G1.5 Implement resource/native-ID ledger, revocation/removal and verified cleanup.
+- [ ] G1.4 Implement quotas/TTL reservations and extension/destroy authorization. **Covers G-F06.**
+- [ ] G1.5 Implement resource/native-ID ledger, revocation/removal and verified cleanup. **Covers G-F06.**
 - [ ] G1.6 Add independent janitor for expired/missing-ledger resource recovery.
-- [ ] G1 gate: duplicate/reorder/crash/timeout scenarios cannot leak unowned resources or resurrect destroyed IDs.
+- [ ] G1 gate: duplicate/reorder/crash/timeout scenarios cannot leak unowned resources or resurrect destroyed IDs. This gate is satisfied against the independent reference model with a faked provider; deployed native-resource proof is the G2 gate and must not be claimed here.
 
 ## G2 — Cloud allocation and isolation
 
@@ -30,8 +47,9 @@ All tasks are pending. On completion record owner, PR/commit, profile/version an
 - [ ] G2.4 Build isolated preview migration/seed and signed immutable role deployment.
 - [ ] G2.5 Implement authenticated preview URL and identity/config readiness checks.
 - [ ] G2.6 Run hostile sibling-preview/fork tests with actual managed-service identities.
-- [ ] G2.7 Prototype/pin a hardened candidate sandbox RuntimeClass and dedicated tainted node pool, remove useful worker node identity and prove no fallback/admission on unsupported runtime; close Q-18.
-- [ ] G2.8 Enforce Temporal API method authorization, direct-endpoint blocking, dedicated start/worker identities and race-safe per-env quota gateway; close Q-19.
+- [ ] G2.7 Implement the sandbox RuntimeClass, dedicated tainted pool and no-useful-node-identity posture chosen in GQ.1; prove no fallback/admission on unsupported runtime. **Deferred from the 1.0 critical path by ADR G-027/G-029; gated on the re-entry trigger in SECURITY.md 1.1. Blocked by: GQ.1 go/no-go ADR.** Required before any candidate outside a bound repository is admitted.
+- [ ] G2.8 Implement the Temporal enforcement mechanism chosen in GQ.2 (quota gateway, dedicated instance, or capability denial scoped to the dependency rather than the whole recipe); dedicated start/worker identities and blocked direct-endpoint access. **Blocked by: GQ.2 go/no-go ADR.**
+- [ ] G2.9 Own preview URL delivery: wildcard DNS, certificate issuance/renewal/revocation, the ACME/API identity, HSTS and origin binding. This is a launch-blocking operational dependency, not an implicit property of the gateway.
 - [ ] G2 gate: candidate runtime/worker, namespace/topic/prefix boundaries are proven at deployed service authorization and complete teardown; unsupported profile fails closed.
 
 ## G3 — Independent gates and reporting
@@ -42,9 +60,12 @@ All tasks are pending. On completion record owner, PR/commit, profile/version an
 - [ ] G3.4 Sign/redact/store evidence outside candidate write scope; authorized dashboard access.
 - [ ] G3.5 Implement GitHub check/deployment reporting outbox and current-head verification.
 - [ ] G3.6 Invalidate/cancel gates on updates/expiry/close and protect attestation integrity.
+- [ ] G3.7 Install SLO instrumentation, metrics pipeline and alerting for the gate surfaces at this phase, not at G6.4, because G3–G5 evidence depends on it. G6.4 retains rotation, on-call ownership and exception policy. **Closes Q-09 telemetry-context storage posture.**
 - [ ] G3 gate: candidate cannot fake a pass and stale results cannot qualify new code/config.
 
 ## G4 — Capacity and spend
+
+**Post-revenue gate (accepted 6 October 2026, ADR G-027).** The 1.0 fleet target is 20 concurrent previews, served by a fixed node pool and an admission semaphore. G4 is not a 1.0 prerequisite. Build it when a customer asks, when measured demand crosses the fixed pool, or when the corresponding `TOPIC-COVERAGE.md` topic #10 deliverable requires it — whichever comes first. GQ.3 still measures per-preview cost and the fixed-foundation floor, because the fixed pool *is* the 1.0 cost model.
 
 - [ ] G4.1 Deploy qualified KEDA/Karpenter with capped reliable/Spot/fallback pools.
 - [ ] G4.2 Configure Kafka lag triggers, partition maxima and offset cold-start behavior.
@@ -55,6 +76,8 @@ All tasks are pending. On completion record owner, PR/commit, profile/version an
 - [ ] G4 gate: useful work recovers from zero/interruption within measured bounds without exceeding resource profiles.
 
 ## G5 — Controlled chaos and SLO evidence
+
+**Post-revenue gate (accepted 6 October 2026, ADR G-027).** The reliability program addresses a buyer the stated ICP is not (`PRODUCT-STRATEGY.md:7`). Seven of the ten catalog fault profiles are client-path injection needing no privileged infrastructure, so the incremental cost of one ad-hoc client-path experiment is small — but the *program* (fault catalog, abort monitor in an independent failure domain, burn methodology, invariant harnesses) is deferred. G-013 still forbids auto-merge and production mutation; nothing about that is relaxed.
 
 - [ ] G5.1 Create reviewed fault catalog and ownership/generation target admission.
 - [ ] G5.2 Implement independent abort/native TTL/remove/recovery checks on reliable capacity.
@@ -67,51 +90,55 @@ All tasks are pending. On completion record owner, PR/commit, profile/version an
 ## G6 — Platform production qualification
 
 - [ ] G6.1 Run fleet-capacity/create/update/cleanup soak and native orphan inventory checks.
-- [ ] G6.2 Qualify platform DB/state restore and reconciliation of resources beyond recovery cut.
+- [ ] G6.2 Qualify platform DB/state restore and reconciliation of resources created beyond the restore cut.
 - [ ] G6.3 Exercise platform upgrades against old module/state/runner versions.
-- [ ] G6.4 Install SLO alerts, runbooks, rotation, on-call ownership and exception policy.
+- [ ] G6.4 Install runbook-backed operator tooling, key rotation, on-call ownership, severity definitions, customer incident communications, maintenance notices/public status and blameless postmortems. Rotation and ownership only; instrumentation landed in G3.7.
 - [ ] G6.5 Publish Ghostlight teardown with measured provisioning/scaling/recovery/cost data.
+- [ ] G6.6 Define and enforce the public API lifecycle: OpenAPI publication, version compatibility window, deprecation and sunset policy, and consumer notification. CLI inherits the same policy.
 - [ ] G6 technical gate: signed fleet/security/cleanup/recovery evidence; current candidate contract and operational owner ready. Paid 1.0 also requires G7.
 
 ## G7 — Complete 1.0 SaaS, onboarding and reviewer product
 
-- [ ] G7.1 Implement organization/trial/region/terms/sample setup and bounded abuse admission; G-F01.
+- [ ] G7.1 Implement organization/trial/region/terms/sample setup and bounded abuse admission; G-F01. Self-serve signup may be replaced by assisted onboarding for the paid pilot; the trial-abuse classifier requires a documented signal list and appeal path before it exists.
 - [ ] G7.2 Implement org RLS/composite FKs, project/repository ACL, invitations/members/service principals and revocation; G-F02.
-- [ ] G7.3 Implement subscription checkout/portal/provider inbox, entitlements/meters and grace/cancel/downgrade with always-available abort/cleanup; G-F03/G-F11.
+- [ ] G7.3 Implement subscription checkout/portal/provider inbox, entitlements/meters and grace/cancel/downgrade with always-available abort/cleanup; G-F03/G-F11. **Blocked by: GQ.4** (provider and meter semantics) and **GQ.3** (approved meter definitions and unit prices). The meter exists before the cost dashboard that displays it.
 - [ ] G7.4 Build verified GitHub installation/repository wizard, revocation/reassignment and integration health; G-F04/G-F12.
 - [ ] G7.5 Build versioned service/template catalog, qualification/publication/deprecation and pinned old cleanup runtime; G-F05.
-- [ ] G7.6 Implement authenticated preview gateway, audience/origin protection, guest grants and current-generation access; G-F07.
+- [ ] G7.6 Implement authenticated preview gateway, audience/origin protection, guest grants and current-generation access; G-F07. **Blocked by: G2.9** (URL/DNS/certificate ownership).
 - [ ] G7.7 Build accessible console/progress/timelines, reviewer room/generation feedback and immutable evidence passports; G-F08/G-F09/G-F10.
-- [ ] G7.8 Implement notices/comments/help/support/status, bounded import/export/audit and resource-verified organization closure; G-F13/G-F14.
-- [ ] G7.9 Qualify sandbox billing/email, economic/pricing assumptions, design-partner activation, keyboard/narrow-screen review/abort and org privacy tests; G-F01–G-F14.
-- [ ] G7.10 Ship first-party identity bootstrap/sign-in, verified email, session lifecycle/revocation, owner MFA, recovery and lockout protections; test account recovery and takeover boundaries.
-- [ ] G7.11 Complete jurisdiction-scoped privacy/legal launch review: terms, privacy notice, DPA/subprocessor disclosures, breach response, rights-request and retention workflows; document accountable operational owners before real customer data.
+- [ ] G7.8 Implement notices/comments/help/support/status, bounded import/export/audit and resource-verified organization closure; G-F13/G-F14. Closure must execute and test the erasure job and post-recovery erasure replay, not only produce the policy.
+- [ ] G7.9 Qualify sandbox billing/email providers, economic/pricing assumptions against the GQ.3 model, org privacy tests, and an automated WCAG 2.2 AA gate over the authenticated review and abort path. Design-partner activation is G7.12 and must not precede G7.10/G7.11.
+- [ ] G7.10 Ship first-party identity bootstrap/sign-in, verified email, session lifecycle/revocation, owner MFA, recovery and lockout protections; test account recovery and takeover boundaries. **Blocked by: GQ.4** (identity provider).
+- [ ] G7.11 Complete jurisdiction-scoped privacy/legal launch review: terms, privacy notice, DPA/subprocessor disclosures, breach response, rights-request and retention workflows; document accountable operational owners before real customer data. **Blocked by: nothing; gates G7.12.**
+- [ ] G7.12 Activate design partners and qualify the reviewer journey, economic assumptions, keyboard/narrow-screen review/abort, keyboard-navigable abort reachability and the published support/limitation matrix. **Blocked by: G7.9, G7.10, G7.11.** No real customer data enters the platform before G7.11 completes.
 - [ ] G7 paid 1.0 gate: G0–G6 critical gates plus signup->repo qualification->preview->independent review->verified cleanup, SaaS subscription and accessible customer lifecycle pass.
 
 ## G8 — 1.5 team self-service and productivity
 
-- [ ] G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15.
-- [ ] G8.2 Implement bounded topology DAG/service/network recipes and independently qualified templates; G-F16.
-- [ ] G8.3 Add versioned synthetic fixtures/snapshots, current-generation reset and fresh-identity clone; G-F17/G-F19.
-- [ ] G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18.
-- [ ] G8.5 Implement compatible candidate/baseline comparison with observation/confidence checks; G-F20.
-- [ ] G8.6 Implement bounded failure-replay recipes and investigation workspace without live external effects; G-F21.
 - [ ] G8.7 Add read-only policy preview, action-digest approvals and execution reauthorization; G-F22.
 - [ ] G8.8 Add bounded fair admissions, team quotas and no-overbooking calendar reservations; G-F23.
+- [ ] G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15. **Blocked by: G8.7, G8.8** — policy extension and fairness ship before teams gain independent operations. Extend the automated accessibility gate to every new console surface here.
+- [ ] G8.2 Implement bounded topology DAG/service/network recipes and independently qualified templates; G-F16.
+- [ ] G8.3 Add versioned synthetic fixtures/snapshots, current-generation reset and fresh-identity clone; G-F17/G-F19.
+- [ ] G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18. **Closes Q-15.**
+- [ ] G8.5 Implement compatible candidate/baseline comparison with observation/confidence checks; G-F20. Deferred behind a post-revenue gate by SCOPE-RETUNE.md; retain only if a design partner requires it. Ship raw before/after numbers before the confidence math.
+- [ ] G8.6 Implement bounded failure-replay recipes and investigation workspace without live external effects; G-F21.
 - [ ] G8.9 Qualify Slack/Teams/Jira notice/finding connectors with redaction and scoped identity; G-F24.
 - [ ] G8 team gate: suspend/reset/expire/update races, CLI parity, fixture privacy, comparison/replay/fairness and retained-resource economics pass; requalify fleet envelope.
 
 ## G9 — 2.0 enterprise fleets and reliability programs
 
-- [ ] G9.1 Qualify SSO/SCIM/project groups and customer recovery; G-F25.
-- [ ] G9.2 Implement one qualified customer-preview-account connector, signed ordered commands/receipts, persistent action ledger and native mutation locks. Unknown outcome blocks conflicting updates/destroys until observation/termination; G-F26.
-- [ ] G9.3 Qualify a separate management/watchdog failure domain from the target cluster, independent bounded cleanup for each supported fault, provider/API/clock failure reporting, customer emergency/disconnect path. Tags are not TTL; unsupported failure classes remain unresolved; close Q-20; G-F26.
+**On signed customer request (accepted 6 October 2026, ADR G-027).** This phase is the most expensive in the plan and carries residual risk that cannot be closed (QUALITY-REVIEW finding 3). Its justification is "an enterprise prospect said they cannot send data to your account." When that prospect exists, build for them. None of it is a 1.0 or 1.5 prerequisite.
+
+- [ ] G9.1 Qualify SSO/SCIM/project groups and customer recovery; G-F25. **Closes Q-14.** Revisit the identity provider decision from ADR G-030 against the switch trigger.
+- [ ] G9.2 Implement one qualified customer-preview-account connector, signed ordered commands/receipts, persistent action ledger and native mutation locks. Unknown outcome blocks conflicting updates/destroys until observation/termination; G-F26. **Blocked by: G9.3** — per the project's own qualification rule, a connector cannot be qualified until its management failure domain and bounded removal path exist.
+- [ ] G9.3 Qualify a separate management/watchdog failure domain from the target cluster, independent bounded cleanup for each supported fault, provider/API/clock failure reporting, customer emergency/disconnect path. Tags are not TTL; unsupported failure classes remain unresolved and **new unsafe faults are refused**; close Q-20. Publish the supported fault/cleanup support matrix and a published sales-facing limitation statement. G-F26.
 - [ ] G9.4 Implement bounded versioned policy tests/publication/approvals and visible expiring exceptions; G-F27.
 - [ ] G9.5 Build native drift detection/ownership classification and reviewed serialized remediation plans; G-F28.
 - [ ] G9.6 Build service owners/dependency coverage, fresh/unknown/stale methodology and scorecards; G-F29.
 - [ ] G9.7 Implement scheduled approved campaigns/game days, per-run reauthorization/abort and immutable remediation task history; G-F30.
 - [ ] G9.8 Qualify SIEM/evidence export/signature rotation, retention/hold and closure; G-F31.
-- [ ] G9.9 Qualify dedicated/regional fleet and enterprise support/shared responsibility; G-F32.
+- [ ] G9.9 Qualify dedicated/regional fleet and enterprise support/shared responsibility; G-F32. **Closes Q-20** only when the fault/cleanup support matrix is published and a real customer disconnect drill has run.
 - [ ] G9 enterprise gate: actual IdP/BYOC wrong-account/replay/offline/cleanup tests, policy/drift/coverage/campaign proof and contractual operations readiness.
 
 ## G10 — 3.0 discovery horizon
