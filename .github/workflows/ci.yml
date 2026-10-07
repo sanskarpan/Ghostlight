@@ -60,13 +60,16 @@ jobs:
       # Every checklist item must have exactly one indexed issue, and every
       # issue must map back to a checklist item. Drift here silently loses work.
       #
+      # Both pending and completed boxes count: ticking a box records completion
+      # and must not make an item vanish from the index.
+      #
       # Phase gates are written as "G0 gate:" in the checklist and "G0-GATE" in
       # the index, so the suffix is normalised per line before comparing.
       - name: Verify checklist and issue index agree
         run: |
           set -euo pipefail
-          checklist_ids=$(grep -oE '^- \[ \] G[0-9Q]+(\.[0-9]+)?' docs/CHECKLIST.md \
-            | sed -E 's/^- \[ \] //' | sort)
+          checklist_ids=$(grep -oE '^- \[[ x]\] G[0-9Q]+(\.[0-9]+)?' docs/CHECKLIST.md \
+            | sed -E 's/^- \[[ x]\] //' | sort)
           index_ids=$(grep -oE '^\| `G[0-9Q]+(\.[0-9]+)?(-GATE)?`' docs/ISSUE-TRACKING.md \
             | sed -E 's/^\| `//; s/`$//; s/-GATE$//' | sort)
           echo "checklist items: $(echo "$checklist_ids" | wc -l)"
@@ -77,6 +80,21 @@ jobs:
             exit 1
           fi
           echo "checklist and index agree"
+
+      # A state marker must be one of the declared values. An invented marker
+      # would silently read as "not done" to every reader and every dashboard.
+      - name: Verify state markers are declared
+        run: |
+          set -euo pipefail
+          bad=$(grep -oE '\*\*\[[A-Z]+\]\*\*' docs/CHECKLIST.md \
+            | sort -u | grep -vE '\*\*\[(WIP|DONE)\]\*\*' || true)
+          if [ -n "$bad" ]; then
+            echo "Undeclared state marker(s) in CHECKLIST.md:"
+            echo "$bad"
+            echo "Declare the marker in the checklist preamble first."
+            exit 1
+          fi
+          echo "state markers declared: $(grep -oE '\*\*\[[A-Z]+\]\*\*' docs/CHECKLIST.md | sort -u | tr '\n' ' ')"
 
       # A duplicated table row or paragraph in the specification set is a
       # generation artefact, not an intentional restatement.
