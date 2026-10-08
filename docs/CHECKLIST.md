@@ -16,12 +16,13 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G0.3 state model + reference tests | **[DONE]** | `internal/environments`, `test/fake` — 30 tests; found and fixed a teardown stall and an uncertain-action deadlock |
 | GQ.3 cost model, measured inputs | **[DONE]** | `tools/pricing`, `internal/costmodel`, `catalog/pricing/aws-us-east-1.json`, COST-MODEL.md rev 2 — 14 tests. **Corrects rev 1**: the floor dominates, not the per-preview cost |
 | G1.1 verified inbox and idempotency | **[WIP]** | `internal/intake` (21), `internal/prstate` (13), migration 0002 — verification, replay window, delivery dedup, stale-event rejection, no resurrection. Store wiring outstanding |
-| G1.2 lifecycle, fencing, durable intents | **[DONE]** | `internal/environments`, `internal/actions` — 27 tests |
-| G1.3 observe-before-retry, serialization | **[DONE]** | `internal/actions` — uncertain vs failed resolved by observation; verified-absent returns to planned |
+| G1.2 lifecycle, fencing, durable intents | **[WIP]** | `internal/environments`, `internal/actions` (27), `internal/postgres` (16) — state machine, fencing triple and SQL-enforced ledger. Reconciler loop outstanding |
+| G1.3 observe-before-retry, serialization | **[WIP]** | `internal/actions` + `internal/postgres` — uncertain vs failed resolved by observation; verified-absent returns to planned; epoch fences takeover. Observation worker outstanding |
 | G2.2 typed allocators | **[WIP]** | `internal/provider` interface + capability admission done; no concrete adapter (blocked by GQ.1/GQ.6 decisions) |
-| G1.1 inbox, idempotency, PR reconcile | pending | next |
 | G0.4–G0.6 identities, contracts | pending | policy_digest producer implemented in schema; contract fixtures outstanding |
 | GQ.1, GQ.2, GQ.4–GQ.6 | pending / deferred | GQ.1 deferred by ADR G-027/G-029 |
+
+Suite: 125 tests passing, 0 failing, 0 skipped across `internal/{environments,actions,provider,costmodel,postgres,intake,prstate}`, `migrations`, `test/fake`.
 
 Not yet started: G1.4–G1.6, all of G2–G10, and every remaining G0 item.
 
@@ -52,7 +53,7 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 
 ## G1 — Durable local lifecycle
 
-- [ ] G1.1 **[WIP]** Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.** Signature verification over exact body bytes, replay window, delivery-ID dedup and the unverified-payload-never-stored rule are done (`internal/intake`, 21 tests). Stale-event rejection and destroyed-environment non-resurrection are done (`internal/prstate`, 13 tests). Schema for both tables is in migration 0002. **Remaining:** the PostgreSQL store behind the intake interface, and wiring the reconciler loop to consume these decisions.
+- [ ] G1.1 **[WIP]** Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.** Verification over exact body bytes, replay window, delivery-ID dedup and the unverified-payload-never-stored rule are done (`internal/intake`, 21 tests). Stale-event rejection and destroyed-environment non-resurrection are done (`internal/prstate`, 13 tests). Both stores are done: intake persistence with conflict-arbitrated admission, bounded retention, and an ignored/processed/failed lifecycle (`internal/postgres/intake.go`); pull-request state with late-observation rejection, environment binding refused once closed, and close returning the environments needing teardown (`internal/postgres/pullrequests.go`). **Remaining:** the reconciler loop that consumes these decisions and drives an action.
 - [ ] G1.2 **[WIP]** Implement desired/observed lifecycle, generation fencing and durable action intents. State machine, fencing triple and durable intent model done and tested; database repository wiring outstanding.
 - [ ] G1.3 **[WIP]** Add observe-before-retry for uncertain native operations and per-environment mutation serialization. `uncertain` semantics, observe-then-resolve and single-runner serialization modelled and tested; observation worker not yet wired.
 - [ ] G1.4 Implement quotas/TTL reservations and extension/destroy authorization. **Covers G-F06.**
