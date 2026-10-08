@@ -28,18 +28,25 @@ var (
 // composite tenant foreign keys, FORCE row level security, partial indexes and
 // check constraints. Verifying them needs a real database, not a mock.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "ghostlight-pg")
+	dir, err := os.MkdirTemp("", "ghostlight-pg-migrations")
 	if err != nil {
 		pgSkip = err
 		os.Exit(m.Run())
 	}
 	defer os.RemoveAll(dir)
 
+	// CachePath and RuntimePath are pinned inside this package's own temp dir.
+	// The library's default cache is a single shared directory, so two packages
+	// starting a database concurrently race to extract the same binaries and one
+	// of them fails. A failing database here would silently skip the schema
+	// verification and report green.
 	port := freePort()
 	pgInstance = embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
 		Port(port).
-		DataPath(dir + "/data").
+		CachePath(dir + "/cache").
 		BinariesPath(dir + "/bin").
+		RuntimePath(dir + "/run").
+		DataPath(dir + "/data").
 		Username("ghostlight").
 		Password("ghostlight").
 		Database("ghostlight"))
