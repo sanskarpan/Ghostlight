@@ -52,14 +52,27 @@ var (
 type Type string
 
 const (
-	TypeAllocate     Type = "allocate"
-	TypeDeploy       Type = "deploy"
-	TypeMigrate      Type = "migrate"
-	TypeSeed         Type = "seed"
-	TypeRollout      Type = "rollout"
-	TypeHealth       Type = "health"
-	TypeDestroy      Type = "destroy"
-	TypeRevoke       Type = "revoke"
+	// TypeReserve takes a capacity reservation. It runs before allocation so a
+	// preview that cannot fit the profile is refused before anything is created.
+	TypeReserve  Type = "reserve"
+	TypeAllocate Type = "allocate"
+	TypeDeploy   Type = "deploy"
+	TypeMigrate  Type = "migrate"
+	TypeSeed     Type = "seed"
+	TypeRollout  Type = "rollout"
+	TypeHealth   Type = "health"
+	// TypeGate runs an independent gate. Readiness is never asserted by the
+	// platform about itself; it is proven.
+	TypeGate Type = "gate"
+	// TypeDrain stops ingress and new work claims. It runs before revocation so
+	// nothing is still using the credentials when they are removed.
+	TypeDrain Type = "drain"
+	// TypeRevoke removes credentials and access bindings.
+	TypeRevoke Type = "revoke"
+	// TypeDestroy removes data. It runs after revocation.
+	TypeDestroy Type = "destroy"
+	// TypeVerifyAbsent proves removal against the provider. Reaching a destroyed
+	// state is a consequence of this succeeding, never an assertion.
 	TypeVerifyAbsent Type = "verify_absent"
 )
 
