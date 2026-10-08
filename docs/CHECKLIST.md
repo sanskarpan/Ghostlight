@@ -1,8 +1,28 @@
 # Implementation checklist and gates
 
-All tasks are pending. On completion record owner, PR/commit, profile/version and evidence path. Shared contract v1.1 is normative. G7 begins alongside G0/G1; stable phase numbering does not defer SaaS until after technical completion. ROADMAP.md defines paid launch, team, enterprise and discovery gates. The original topics are minimum scope.
+All tasks are pending unless the line carries a state marker. On completion record owner, PR/commit, profile/version and evidence path. Shared contract v1.1 is normative. G7 begins alongside G0/G1; stable phase numbering does not defer SaaS until after technical completion. ROADMAP.md defines paid launch, team, enterprise and discovery gates. The original topics are minimum scope.
+
+State markers: **[WIP]** in progress. **[DONE]** complete, with recorded evidence. A ticked box alone does not mean an item is finished; the marker and its evidence line are the record.
 
 Items marked **Blocked by** must not start until the named item's evidence exists. Stable phase numbering is not permission to start an item before its stated dependency. Where the numbering and the dependency conflict, the dependency wins and the numbering is a reporting label only.
+
+## Status
+
+Current branch: `main` (plus per-item feature branches). Verification: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test -race ./...` all enforced in CI.
+
+| Item | State | Evidence |
+|---|---|---|
+| G0.2 platform modules, schema | **[DONE]** | `internal/{environments,actions,provider,costmodel}`, `migrations/` — 76 tests passing, schema verified against real PostgreSQL |
+| G0.3 state model + reference tests | **[DONE]** | `internal/environments`, `test/fake` — 30 tests; found and fixed a teardown stall and an uncertain-action deadlock |
+| GQ.3 cost model, measured inputs | **[DONE]** | `tools/pricing`, `internal/costmodel`, `catalog/pricing/aws-us-east-1.json`, COST-MODEL.md rev 2 — 14 tests. **Corrects rev 1**: the floor dominates, not the per-preview cost |
+| G1.2 lifecycle, fencing, durable intents | **[DONE]** | `internal/environments`, `internal/actions` — 27 tests |
+| G1.3 observe-before-retry, serialization | **[DONE]** | `internal/actions` — uncertain vs failed resolved by observation; verified-absent returns to planned |
+| G2.2 typed allocators | **[WIP]** | `internal/provider` interface + capability admission done; no concrete adapter (blocked by GQ.1/GQ.6 decisions) |
+| G1.1 inbox, idempotency, PR reconcile | pending | next |
+| G0.4–G0.6 identities, contracts | pending | policy_digest producer implemented in schema; contract fixtures outstanding |
+| GQ.1, GQ.2, GQ.4–GQ.6 | pending / deferred | GQ.1 deferred by ADR G-027/G-029 |
+
+Not yet started: G1.4–G1.6, all of G2–G10, and every remaining G0 item.
 
 ## GQ — Qualification spikes (blocking, precedes G0 commitment)
 
@@ -12,7 +32,7 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 
 - [ ] GQ.1 Close Q-18: measure sandbox runtime feasibility. **Deferred from the 1.0 critical path by ADR G-027/G-029; gated on the re-entry trigger in SECURITY.md 1.1, not on a date.** Still required before any candidate outside a bound repository is admitted. Record measured per-pod host overhead at the preview-small request size, nested-virtualization CPU penalty, warm/cold pod-ready latency, node-boot p95, and the resulting aggregate vCPU and memory requirement for 20 concurrent previews. Select the runtime class, VMM, instance families and node-provisioning path. Record the compute cost per preview and the revised worker cap. Evidence must include a successful guest-kernel check and a 100% `/dev/kvm` presence check. Go/no-go ADR required.
 - [ ] GQ.2 Close Q-19: measure Temporal capacity enforcement. Prove whether the hosted service can server-enforce a per-namespace active-workflow cap. If not, prototype the gateway-owned durable reservation, the child-workflow ownership shape and the fencing/reuse handling, and measure Actions-per-workflow, steady APS and worst-case hostile-environment cost. Record whether the requirement is reframed as a per-environment Actions-per-hour budget. Go/no-go ADR required.
-- [ ] GQ.3 Close Q-13: produce the per-preview cost model and the approved commercial packaging. Measure fixed foundation cost, variable per-preview cost (compute, dedicated dependencies, storage, egress), experiment cost and provider spend separately, at the qualified preview-small profile and at worst case. Produce approved meter definitions, unit prices, per-plan included allowances and margin targets. Publish a bounded worst-case monthly customer ceiling. Evidence: COST-MODEL.md with measured inputs, plus design-partner willingness-to-pay interviews.
+- [ ] GQ.3 **[WIP]** Close Q-13: produce the per-preview cost model and the approved commercial packaging. Measure fixed foundation cost, variable per-preview cost (compute, dedicated dependencies, storage, egress), experiment cost and provider spend separately, at the qualified preview-small profile and at worst case. Produce approved meter definitions, unit prices, per-plan included allowances and margin targets. Publish a bounded worst-case monthly customer ceiling. Evidence: COST-MODEL.md with measured inputs, plus design-partner willingness-to-pay interviews.
 - [ ] GQ.4 Close Q-10, Q-11, Q-14 and G-024/G-025: select the payment platform and identity provider. Confirm metered-billing semantics, event-ordering/reconciliation contract, tax and invoicing posture, delivery and privacy posture, MFA/session/recovery coverage, and the enterprise SSO/SCIM path. Record provider-specific quotas, cost and the migration trigger to the runner-up. Evidence: recorded ADR and a working sandbox integration of checkout, portal, webhook verification, sign-in, MFA, recovery and revocation.
 - [ ] GQ.5 Close Q-17: run the core-journey usability and accessibility study with representative participants. Measure time-to-first-preview, assisted-completion rate, and an automated WCAG 2.2 AA gate over the authenticated review and abort path. Publish the differentiated-value go/no-go for later product bets and a published support/limitation matrix for every unproven isolation or cleanup claim.
 - [ ] GQ.6 Close Q-06 and Q-16 research: qualify preview dependency isolation feasibility per managed service (PostgreSQL, Kafka, Temporal, Redis, S3, identity) and the customer-connector identity/native-permission/offline-safety model. Enumerate, per resource type, whether ownership tags and provider-native inventory are sufficient for post-restore reconciliation, and which types are unsupported. Evidence: two concurrent malicious previews cannot access one another, measured at deployed service authorization.
@@ -21,8 +41,8 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 ## G0 — Foundation and trust
 
 - [ ] G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas. **Blocked by: GQ.1, GQ.2** (instance families and runtime are selected there).
-- [ ] G0.2 Create platform Go modules, API/auth, validated catalog/config and platform database schema.
-- [ ] G0.3 Define environment/generation/action/resource state model and independent reference tests.
+- [ ] G0.2 **[WIP]** Create platform Go modules, API/auth, validated catalog/config and platform database schema. Modules, schema and org boundary done; API/auth and catalog validation outstanding.
+- [x] G0.3 **[DONE]** Define environment/generation/action/resource state model and independent reference tests. Evidence: `internal/environments` (13 tests), `internal/actions` (14), `test/fake` (17), `migrations` (19 against real PostgreSQL). Found and fixed a teardown stall in `draining` and a verified-absence deadlock.
 - [ ] G0.4 Establish preview account, protected runner build/provenance, artifact/state/evidence KMS boundaries, evidence signing algorithm/trust root and key-rotation period.
 - [ ] G0.5 Create least-privilege identities for controller, build, allocator, runner, runtime, experiment, janitor and signer.
 - [ ] G0.6 Validate shared recipe/health/gate contracts against Keel fixtures. `policy_digest` must be present in the recipe and resolvable from the first schema; a candidate identity that cannot bind a policy digest cannot be gated.
@@ -32,8 +52,8 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 ## G1 — Durable local lifecycle
 
 - [ ] G1.1 Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.**
-- [ ] G1.2 Implement desired/observed lifecycle, generation fencing and durable action intents.
-- [ ] G1.3 Add observe-before-retry for uncertain native operations and per-environment mutation serialization.
+- [ ] G1.2 **[WIP]** Implement desired/observed lifecycle, generation fencing and durable action intents. State machine, fencing triple and durable intent model done and tested; database repository wiring outstanding.
+- [ ] G1.3 **[WIP]** Add observe-before-retry for uncertain native operations and per-environment mutation serialization. `uncertain` semantics, observe-then-resolve and single-runner serialization modelled and tested; observation worker not yet wired.
 - [ ] G1.4 Implement quotas/TTL reservations and extension/destroy authorization. **Covers G-F06.**
 - [ ] G1.5 Implement resource/native-ID ledger, revocation/removal and verified cleanup. **Covers G-F06.**
 - [ ] G1.6 Add independent janitor for expired/missing-ledger resource recovery.
@@ -42,7 +62,7 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 ## G2 — Cloud allocation and isolation
 
 - [ ] G2.1 Provision foundation Terraform and qualified per-environment module/state locks.
-- [ ] G2.2 Implement typed PostgreSQL/Kafka/Temporal/Redis/S3/OIDC allocators and safe credential references.
+- [ ] G2.2 **[WIP]** Implement typed PostgreSQL/Kafka/Temporal/Redis/S3/OIDC allocators and safe credential references. `internal/provider` capability contract, bounds enforcement, shared-resource classification and fail-closed admission done; concrete adapters blocked by GQ.1/GQ.6.
 - [ ] G2.3 Install namespace/network/egress/resource/pod policies before candidate pods.
 - [ ] G2.4 Build isolated preview migration/seed and signed immutable role deployment.
 - [ ] G2.5 Implement authenticated preview URL and identity/config readiness checks.
