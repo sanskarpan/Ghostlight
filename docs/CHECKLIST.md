@@ -15,6 +15,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G0.2 platform modules, schema | **[DONE]** | `internal/{environments,actions,provider,costmodel}`, `migrations/` — 76 tests passing, schema verified against real PostgreSQL |
 | G0.3 state model + reference tests | **[DONE]** | `internal/environments`, `test/fake` — 30 tests; found and fixed a teardown stall and an uncertain-action deadlock |
 | GQ.3 cost model, measured inputs | **[DONE]** | `tools/pricing`, `internal/costmodel`, `catalog/pricing/aws-us-east-1.json`, COST-MODEL.md rev 2 — 14 tests. **Corrects rev 1**: the floor dominates, not the per-preview cost |
+| G1.1 verified inbox and idempotency | **[WIP]** | `internal/intake` (21), `internal/prstate` (13), migration 0002 — verification, replay window, delivery dedup, stale-event rejection, no resurrection. Store wiring outstanding |
 | G1.2 lifecycle, fencing, durable intents | **[DONE]** | `internal/environments`, `internal/actions` — 27 tests |
 | G1.3 observe-before-retry, serialization | **[DONE]** | `internal/actions` — uncertain vs failed resolved by observation; verified-absent returns to planned |
 | G2.2 typed allocators | **[WIP]** | `internal/provider` interface + capability admission done; no concrete adapter (blocked by GQ.1/GQ.6 decisions) |
@@ -51,7 +52,7 @@ Purpose: answer the questions that decide whether the expensive parts of G2/G4 a
 
 ## G1 — Durable local lifecycle
 
-- [ ] G1.1 Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.**
+- [ ] G1.1 **[WIP]** Implement verified event inbox, request idempotency and current-PR reconciliation. **Covers G-F06.** Signature verification over exact body bytes, replay window, delivery-ID dedup and the unverified-payload-never-stored rule are done (`internal/intake`, 21 tests). Stale-event rejection and destroyed-environment non-resurrection are done (`internal/prstate`, 13 tests). Schema for both tables is in migration 0002. **Remaining:** the PostgreSQL store behind the intake interface, and wiring the reconciler loop to consume these decisions.
 - [ ] G1.2 **[WIP]** Implement desired/observed lifecycle, generation fencing and durable action intents. State machine, fencing triple and durable intent model done and tested; database repository wiring outstanding.
 - [ ] G1.3 **[WIP]** Add observe-before-retry for uncertain native operations and per-environment mutation serialization. `uncertain` semantics, observe-then-resolve and single-runner serialization modelled and tested; observation worker not yet wired.
 - [ ] G1.4 Implement quotas/TTL reservations and extension/destroy authorization. **Covers G-F06.**
