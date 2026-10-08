@@ -16,12 +16,13 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G0.3 state model + reference tests | **[DONE]** | `internal/environments`, `test/fake` — 30 tests; found and fixed a teardown stall and an uncertain-action deadlock |
 | GQ.3 cost model, measured inputs | **[DONE]** | `tools/pricing`, `internal/costmodel`, `catalog/pricing/aws-us-east-1.json`, COST-MODEL.md rev 2 — 14 tests. **Corrects rev 1**: the floor dominates, not the per-preview cost |
 | G1.1 verified inbox and idempotency | **[WIP]** | `internal/intake` (21), `internal/prstate` (13), migration 0002 — verification, replay window, delivery dedup, stale-event rejection, no resurrection. Store wiring outstanding |
-| G1.2 lifecycle, fencing, durable intents | **[DONE]** | `internal/environments`, `internal/actions` — 27 tests |
-| G1.3 observe-before-retry, serialization | **[DONE]** | `internal/actions` — uncertain vs failed resolved by observation; verified-absent returns to planned |
+| G1.2 lifecycle, fencing, durable intents | **[WIP]** | `internal/environments`, `internal/actions` (27), `internal/postgres` (16) — state machine, fencing triple and SQL-enforced ledger. Reconciler loop outstanding |
+| G1.3 observe-before-retry, serialization | **[WIP]** | `internal/actions` + `internal/postgres` — uncertain vs failed resolved by observation; verified-absent returns to planned; epoch fences takeover. Observation worker outstanding |
 | G2.2 typed allocators | **[WIP]** | `internal/provider` interface + capability admission done; no concrete adapter (blocked by GQ.1/GQ.6 decisions) |
-| G1.1 inbox, idempotency, PR reconcile | pending | next |
 | G0.4–G0.6 identities, contracts | pending | policy_digest producer implemented in schema; contract fixtures outstanding |
 | GQ.1, GQ.2, GQ.4–GQ.6 | pending / deferred | GQ.1 deferred by ADR G-027/G-029 |
+
+Suite: 125 tests passing, 0 failing, 0 skipped across `internal/{environments,actions,provider,costmodel,postgres,intake,prstate}`, `migrations`, `test/fake`.
 
 Not yet started: G1.4–G1.6, all of G2–G10, and every remaining G0 item.
 
