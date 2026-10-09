@@ -109,14 +109,23 @@ func (m *MemoryLedger) ByID(_ context.Context, id string) (Allocation, error) {
 	return rec.Allocation, nil
 }
 
-func (m *MemoryLedger) record(id string) (*Record, error) {
+// record returns a copy of a record, taken while the lock is held.
+//
+// It deliberately does not return the stored pointer. Handing out a pointer to mutable
+// state and letting the caller read it after the lock is released means a concurrent
+// MarkRevoked can change those fields underneath them, which is a genuine data race
+// rather than a theoretical one.
+func (m *MemoryLedger) record(id string) (Record, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	rec, ok := m.byID[id]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownResource, id)
+		return Record{}, fmt.Errorf("%w: %s", ErrUnknownResource, id)
 	}
-	return rec, nil
+	return Record{
+		Allocation:   rec.Allocation,
+		Observations: append([]Observation(nil), rec.Observations...),
+	}, nil
 }
 
 // MarkRevoked records that credentials were removed.
