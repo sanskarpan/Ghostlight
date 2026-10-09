@@ -524,6 +524,46 @@ func TestOneEnvironmentCannotAuthorizeAnothersAllocation(t *testing.T) {
 	}
 }
 
+// TestOutOfOrderEventCannotRollTheGenerationBack is a regression test.
+//
+// The G1 gate found this: an out-of-order delivery carrying an older generation was
+// happily overwriting the record, which would let a delayed webhook authorize cleanup of
+// something a later generation had replaced.
+func TestOutOfOrderEventCannotRollTheGenerationBack(t *testing.T) {
+	l := ledger()
+	ctx := context.Background()
+
+	if err := l.Record(ctx, allocation("a", "env-1", "database", "primary")); err != nil {
+		t.Fatalf("record generation 3: %v", err)
+	}
+
+	older := allocation("a", "env-1", "database", "primary")
+	older.Generation = 2
+	if err := l.Record(ctx, older); !errors.Is(err, resource.ErrGenerationMismatch) {
+		t.Fatalf("an out-of-order event must be refused, got %v", err)
+	}
+
+	got, err := l.ByID(ctx, "a")
+	if err != nil {
+		t.Fatalf("by id: %v", err)
+	}
+	if got.Generation != 3 {
+		t.Fatalf("the generation rolled back to %d", got.Generation)
+	}
+
+	// A newer generation is still accepted: reordering must not block legitimate
+	// progress, only going backwards.
+	newer := allocation("a", "env-1", "database", "primary")
+	newer.Generation = 4
+	if err := l.Record(ctx, newer); err != nil {
+		t.Fatalf("a newer generation must be accepted: %v", err)
+	}
+	got, _ = l.ByID(ctx, "a")
+	if got.Generation != 4 {
+		t.Fatalf("the generation did not advance, got %d", got.Generation)
+	}
+}
+
 // TestAllocationRequiresAKindAndLogicalKey keeps the ledger addressable.
 func TestAllocationRequiresAKindAndLogicalKey(t *testing.T) {
 	l := ledger()

@@ -75,6 +75,15 @@ func (m *MemoryLedger) Record(_ context.Context, a Allocation) error {
 		if existing.State == StateVerifiedDeleted {
 			return fmt.Errorf("%w: %s is tombstoned and must not be recreated", ErrAlreadyDeleted, a.ID)
 		}
+		// Generation fencing on write. An out-of-order delivery carrying an older
+		// generation must not roll the record back: the newer generation is the one
+		// that owns the resource, and accepting the older one would let a delayed
+		// webhook authorize cleanup of something a later generation replaced.
+		if a.Generation < existing.Generation {
+			return fmt.Errorf(
+				"%w: %s is at generation %d; an event for generation %d arrived out of order",
+				ErrGenerationMismatch, a.ID, existing.Generation, a.Generation)
+		}
 		existing.Allocation = a
 		m.byKey[key] = a.ID
 		return nil
