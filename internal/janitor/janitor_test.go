@@ -47,7 +47,7 @@ type retryable struct {
 	phase   string
 }
 
-func (r *retryable) Cleanup(_ context.Context, environmentID string, _ uint64, _ string) (janitor.PhaseResult, error) {
+func (r *retryable) Retry(_ context.Context, environmentID string, _ uint64, _ string) (janitor.PhaseResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {

@@ -108,19 +108,40 @@ const (
 	VerdictQuarantined Verdict = "quarantined"
 )
 
-// Retryable is the teardown retry the janitor performs.
-//
-// It is an interface rather than a concrete driver so the janitor's decision-making is
-// testable on its own, which is where the safety property lives.
-type Retryable interface {
-	// Cleanup retries an environment's teardown.
-	Cleanup(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error)
-}
-
 // PhaseResult mirrors the cleanup driver's outcome shape.
+//
+// It is a distinct type from the driver's own result so this package does not depend on
+// it. That keeps the janitor's decision-making testable on its own, which is where the
+// safety property lives.
 type PhaseResult struct {
 	Phase   string
 	Pending []string
+}
+
+// Retryable is the teardown retry the janitor performs.
+type Retryable interface {
+	// Retry re-runs an environment's teardown.
+	Retry(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error)
+}
+
+// CleanupRetryer adapts a cleanup driver to the janitor's retry seam.
+type CleanupRetryer struct {
+	// Cleanup retries an environment's teardown. It is supplied by the caller rather
+	// than imported, so this package stays independent of the driver.
+	Cleanup func(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error)
+}
+
+// Retry implements Retryable.
+func (c CleanupRetryer) Retry(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error) {
+	return c.Cleanup(ctx, environmentID, generation, actor)
+}
+
+// RetryableFunc adapts a function to Retryable.
+type RetryableFunc func(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error)
+
+// Retry implements Retryable.
+func (f RetryableFunc) Retry(ctx context.Context, environmentID string, generation uint64, actor string) (PhaseResult, error) {
+	return f(ctx, environmentID, generation, actor)
 }
 
 // Quarantine records a resource the janitor will not touch.
@@ -318,7 +339,7 @@ func (j *Janitor) classify(ctx context.Context, d Discovered) (Finding, error) {
 			f.Detail = "revoked but still present; no retry is configured"
 			return f, nil
 		}
-		out, err := j.retry.Cleanup(ctx, envID, match.Generation, "janitor")
+		out, err := j.retry.Retry(ctx, envID, match.Generation, "janitor")
 		if err != nil {
 			return f, fmt.Errorf("retry teardown for %s: %w", envID, err)
 		}
