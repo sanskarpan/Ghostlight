@@ -207,7 +207,7 @@ resource "aws_db_instance" "preview" {
   # This is an environment-owned resource. It carries no OwnershipScope tag, so the
   # foundation role's deny does not apply to it and teardown can remove it. That
   # distinction is the entire separation between the foundation and a preview.
-  identifier = "ghostlight-${local.environment_suffix.hex}"
+  identifier = "ghostlight-${random_id.environment_suffix.hex}"
 
   engine               = var.database_engine
   engine_version       = var.database_version
@@ -234,7 +234,7 @@ resource "aws_db_instance" "preview" {
   deletion_protection = false
 
   tags = merge(local.tags, {
-    Name = "ghostlight-${local.environment_suffix.hex}"
+    Name = "ghostlight-${random_id.environment_suffix.hex}"
     Kind = "database"
   })
 
