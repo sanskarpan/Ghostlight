@@ -100,7 +100,9 @@ type harness struct {
 	issuer *resource.AuthorityIssuer
 	driver *cleanup.Driver
 	seq    *seqLog
-	pages  []string
+	// mu guards pages, which several concurrent cleanup goroutines append to.
+	mu    sync.Mutex
+	pages []string
 }
 
 func newHarness(t *testing.T, providers map[string]cleanup.Depender, present map[string]bool) *harness {
@@ -131,9 +133,18 @@ func newHarness(t *testing.T, providers map[string]cleanup.Depender, present map
 		}
 	}
 	d.SetPage(func(env, reason string) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		h.pages = append(h.pages, env+": "+reason)
 	})
 	return h
+}
+
+// pageCount is the number of escalations, read safely.
+func (h *harness) pageCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.pages)
 }
 
 func alloc(id, env, kind, key string, shared bool) resource.Allocation {
@@ -322,8 +333,8 @@ func TestSharedResourcesAreSkippedNotDestroyed(t *testing.T) {
 	if res.Phase != cleanup.PhaseDestroyed {
 		t.Fatalf("a shared-only environment is fully cleaned, got %s", res.Phase)
 	}
-	if len(h.pages) != 0 {
-		t.Fatalf("skipping a shared resource is not pageable, got %v", h.pages)
+	if n := h.pageCount(); n != 0 {
+		t.Fatalf("skipping a shared resource is not pageable, got %d pages", n)
 	}
 }
 
@@ -403,7 +414,7 @@ func TestUnknownKindIsNotSilentlySkipped(t *testing.T) {
 	if !strings.Contains(res.Skipped[0].Detail, "no provider is registered") {
 		t.Fatalf("the detail must explain the gap, got %q", res.Skipped[0].Detail)
 	}
-	if len(h.pages) == 0 {
+	if h.pageCount() == 0 {
 		t.Fatal("a kind nothing can remove must page an operator")
 	}
 }
@@ -611,7 +622,7 @@ func TestPreservedStateIsNeverReportedDestroyed(t *testing.T) {
 	if res.Phase != cleanup.PhaseVerifying {
 		t.Fatalf("it must remain verifying, got %s", res.Phase)
 	}
-	if len(h.pages) == 0 {
+	if h.pageCount() == 0 {
 		t.Fatal("an unremovable resource must page an operator rather than wait to be noticed")
 	}
 }
