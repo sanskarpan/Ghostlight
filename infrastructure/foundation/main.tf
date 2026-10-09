@@ -311,12 +311,14 @@ data "aws_iam_policy_document" "preview_assume" {
       # untagged principal, so merely being in the principals list is not enough.
       values = ["*"]
     }
-  }
 
-  condition {
-    test     = "StringEquals"
-    variable = "aws:PrincipalOrgID"
-    values   = var.permitted_account_ids
+    condition {
+      test     = "StringEquals"
+      variable = "aws:PrincipalOrgID"
+      # An environment in an unlisted account is denied by default rather than allowed
+      # by default.
+      values = var.permitted_account_ids
+    }
   }
 }
 
