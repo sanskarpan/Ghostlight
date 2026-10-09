@@ -17,25 +17,28 @@ import (
 // deliveries could both observe absence and both insert. Letting the database
 // arbitrate means exactly one insert succeeds and the other learns it was a
 // duplicate from the conflict itself.
-type intakeStore struct {
+// IntakeStore is exported because the controller pass consumes it. The type is
+// named for what it is rather than hidden, so its methods can be reached from
+// another package without re-declaring an identical interface there.
+type IntakeStore struct {
 	db       *sql.DB
 	provider string
 }
 
 // NewIntakeStore builds the intake store for a provider.
-func NewIntakeStore(db *sql.DB, provider string) *intakeStore {
-	return &intakeStore{db: db, provider: provider}
+func NewIntakeStore(db *sql.DB, provider string) *IntakeStore {
+	return &IntakeStore{db: db, provider: provider}
 }
 
 // Compile-time check that the store satisfies the interface intake depends on.
-var _ intake.Store = (*intakeStore)(nil)
+var _ intake.Store = (*IntakeStore)(nil)
 
 // Insert persists a verified event, returning false when the delivery was already
 // admitted.
 //
 // A duplicate is not an error: redelivery is normal, and treating it as a failure
 // would make the provider retry an event that is already safely stored.
-func (s *intakeStore) Insert(ctx context.Context, e intake.Stored) (bool, error) {
+func (s *IntakeStore) Insert(ctx context.Context, e intake.Stored) (bool, error) {
 	if s.provider == "" {
 		return false, errors.New("provider is required")
 	}
@@ -70,7 +73,7 @@ func (s *intakeStore) Insert(ctx context.Context, e intake.Stored) (bool, error)
 //
 // Processing failures are retried with the same row, so the delivery identifier
 // remains the idempotency key across retries rather than a new identity each time.
-func (s *intakeStore) IntakePending(ctx context.Context, limit int) ([]PendingEvent, error) {
+func (s *IntakeStore) IntakePending(ctx context.Context, limit int) ([]PendingEvent, error) {
 	if limit <= 0 {
 		return nil, errors.New("limit must be positive")
 	}
@@ -117,7 +120,7 @@ type PendingEvent struct {
 // It is refused for a row already recorded as ignored: an ignored event was a
 // deliberate decision to do nothing, and later marking it processed would erase
 // the reason that decision was recorded.
-func (s *intakeStore) MarkIntakeProcessed(ctx context.Context, deliveryID string) error {
+func (s *IntakeStore) MarkIntakeProcessed(ctx context.Context, deliveryID string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE webhook_inbox
 		SET processing_status = 'processed',
@@ -141,7 +144,7 @@ func (s *intakeStore) MarkIntakeProcessed(ctx context.Context, deliveryID string
 // A stale or duplicate-meaningful event is a successful outcome, not a failure.
 // Recording it as ignored keeps it out of the retry queue while leaving the row
 // for audit.
-func (s *intakeStore) MarkIntakeIgnored(ctx context.Context, deliveryID, reason string) error {
+func (s *IntakeStore) MarkIntakeIgnored(ctx context.Context, deliveryID, reason string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE webhook_inbox
 		SET processing_status = 'ignored',
@@ -162,7 +165,7 @@ func (s *intakeStore) MarkIntakeIgnored(ctx context.Context, deliveryID, reason 
 //
 // The row is not deleted on failure, because the delivery identifier is the
 // idempotency key: a retry must resolve to the same row, not a new identity.
-func (s *intakeStore) MarkIntakeFailed(ctx context.Context, deliveryID, reason string, nextAttempt time.Time) error {
+func (s *IntakeStore) MarkIntakeFailed(ctx context.Context, deliveryID, reason string, nextAttempt time.Time) error {
 	// The guard keeps a completed or ignored event from being dragged back into
 	// the retry queue by a late-arriving failure report.
 	res, err := s.db.ExecContext(ctx, `
@@ -193,7 +196,7 @@ func (s *intakeStore) MarkIntakeFailed(ctx context.Context, deliveryID, reason s
 // expires_at is computed from receipt by the caller. Checking the caller's
 // arithmetic would mean trusting it, and a row recorded with too short a window
 // would be deleted immediately instead of persisting for the intended period.
-func (s *intakeStore) ExpireIntake(ctx context.Context, limit int, maxAge time.Duration) (int64, error) {
+func (s *IntakeStore) ExpireIntake(ctx context.Context, limit int, maxAge time.Duration) (int64, error) {
 	if limit <= 0 {
 		return 0, errors.New("limit must be positive")
 	}

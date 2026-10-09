@@ -205,38 +205,54 @@ type Clock func() time.Time
 
 // Pass is one reconciliation pass.
 type Pass struct {
-	store    Store
-	executor Executor
-	observer Observer
-	watchdog Watchdog
-	cfg      Config
-	owner    string
-	now      Clock
+	store     Store
+	executor  Executor
+	observer  Observer
+	watchdog  Watchdog
+	queue     IntakeQueue
+	lifecycle Lifecycle
+	cfg       Config
+	owner     string
+	now       Clock
 	// jitter varies retry scheduling so a fleet of controllers does not retry in
 	// lockstep. Injected for determinism in tests.
 	jitter func() float64
+	// intake records the last intake outcome, so a caller can report it without
+	// the pass having to publish metrics into a shared sink.
+	lastIntake IntakeSummary
 }
 
 // Options configures a pass.
 type Options struct {
-	Store    Store
-	Executor Executor
-	Observer Observer
-	Watchdog Watchdog
-	Config   Config
-	Owner    string
-	Now      Clock
-	Jitter   func() float64
+	Store     Store
+	Executor  Executor
+	Observer  Observer
+	Watchdog  Watchdog
+	Queue     IntakeQueue
+	Lifecycle Lifecycle
+	Config    Config
+	Owner     string
+	Now       Clock
+	Jitter    func() float64
 }
 
-// New builds a pass. Executor and Observer may be nil, in which case the
-// corresponding stages report nothing rather than failing the pass.
+// New builds a pass. Executor, Observer, Queue and Lifecycle may be nil, in which
+// case the corresponding stages report nothing rather than failing the pass.
 func New(o Options) (*Pass, error) {
 	if o.Store == nil {
 		return nil, errors.New("store is required")
 	}
 	if o.Owner == "" {
 		return nil, errors.New("owner is required; an unattributed lease cannot be released or audited")
+	}
+	// A queue without a lifecycle, or the reverse, would admit events with nothing
+	// able to decide what they mean. Failing at construction beats a queue that
+	// silently drains into nothing.
+	if o.Queue != nil && o.Lifecycle == nil {
+		return nil, errors.New("an intake queue requires a lifecycle to reconcile against")
+	}
+	if o.Lifecycle != nil && o.Queue == nil {
+		return nil, errors.New("a lifecycle requires an intake queue to consume")
 	}
 	cfg := o.Config
 	if cfg == (Config{}) {
@@ -255,9 +271,13 @@ func New(o Options) (*Pass, error) {
 	}
 	return &Pass{
 		store: o.Store, executor: o.Executor, observer: o.Observer,
-		watchdog: o.Watchdog, cfg: cfg, owner: o.Owner, now: now, jitter: jitter,
+		watchdog: o.Watchdog, queue: o.Queue, lifecycle: o.Lifecycle,
+		cfg: cfg, owner: o.Owner, now: now, jitter: jitter,
 	}, nil
 }
+
+// LastIntake returns the intake outcome of the most recent pass.
+func (p *Pass) LastIntake() IntakeSummary { return p.lastIntake }
 
 // ErrFenced means a completion was refused because the lease or generation moved.
 var ErrFenced = errors.New("result rejected by generation or epoch fence")
@@ -272,8 +292,23 @@ func (p *Pass) Run(ctx context.Context, work []Work, uncertain []UncertainWork) 
 	var m Metrics
 	var errs []error
 
-	// Observation runs first. An uncertain action is the only state that can leak a
-	// resource, so it gets priority over starting new work.
+	// Intake runs first. An admitted event is durable work that is already
+	// recorded, and leaving it queued behind a large work backlog would let the
+	// backlog win indefinitely.
+	if p.queue != nil && p.lifecycle != nil {
+		im, ierr := p.processIntake(ctx, p.queue, p.lifecycle)
+		p.lastIntake = im.Summary()
+		m.EventsProcessed += im.processed
+		m.EventsIgnored += im.ignored + im.stale
+		m.EventsFailed += im.failed + im.unresolvable
+		m.EnvironmentsMoved += im.created + im.updated + im.torndown
+		if ierr != nil {
+			errs = append(errs, fmt.Errorf("intake: %w", ierr))
+		}
+	}
+
+	// Observation runs second. An uncertain action is the only state that can leak
+	// a resource, so it gets priority over starting new work.
 	if p.observer != nil && len(uncertain) > 0 {
 		obs, oerr := p.observe(ctx, uncertain)
 		m.Add(obs)
