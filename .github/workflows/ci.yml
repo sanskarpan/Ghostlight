@@ -62,12 +62,20 @@ jobs:
           terraform_version: '1.9.5'
 
       # Infrastructure that is never validated is how broken HCL ships and fails during a
-      # deploy, which is the worst possible time to discover it.
+      # deploy, which is the worst possible time to discover it. Both modules are checked:
+      # the platform foundation and the disposable per-environment module.
       - name: Format
-        run: terraform -chdir=infrastructure/foundation fmt -check -diff
+        run: |
+          for dir in infrastructure/foundation infrastructure/environment; do
+            terraform -chdir="$dir" fmt -check -diff
+          done
 
       - name: Validate
-        run: terraform -chdir=infrastructure/foundation init -backend=false -input=false && terraform -chdir=infrastructure/foundation validate
+        run: |
+          for dir in infrastructure/foundation infrastructure/environment; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
 
   docs:
     name: document integrity
