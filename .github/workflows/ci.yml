@@ -49,6 +49,24 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+
+  terraform:
+    name: terraform fmt and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      # Infrastructure that is never validated is how broken HCL ships and fails during a
+      # deploy, which is the worst possible time to discover it.
+      - name: Format
+        run: terraform -chdir=infrastructure/foundation fmt -check -diff
+
+      - name: Validate
+        run: terraform -chdir=infrastructure/foundation init -backend=false -input=false && terraform -chdir=infrastructure/foundation validate
           if-no-files-found: ignore
 
   docs:
