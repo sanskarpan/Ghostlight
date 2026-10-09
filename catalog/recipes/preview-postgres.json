@@ -1,0 +1,24 @@
+{
+  "name": "preview-postgres",
+  "schema_version": "ghostlight.recipe/v1",
+  "image": "registry.ghostlight.test/previews/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "dependencies": [
+    {"kind": "postgres", "profile": "postgres-standard", "logical_key": "primary"}
+  ],
+  "tests": ["smoke"],
+  "profiles": ["postgres-standard"],
+  "permissions": ["db:connect", "db:migrate"],
+  "health": [
+    {
+      "name": "http-ready",
+      "endpoint": "/readyz",
+      "interval_seconds": 10,
+      "timeout_seconds": 2,
+      "failure_threshold": 3,
+      "success_threshold": 1
+    }
+  ],
+  "gates": [
+    {"name": "smoke", "required": true}
+  ]
+}
