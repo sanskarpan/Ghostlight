@@ -47,8 +47,8 @@ locals {
   name = "ghostlight-foundation"
 
   common_tags = {
-    Platform        = "ghostlight"
-    ManagedBy       = "terraform"
+    Platform  = "ghostlight"
+    ManagedBy = "terraform"
     # Foundation resources carry this so the janitor can identify them. An environment
     # module must never write it, because the janitor treats it as proof of ownership.
     OwnershipScope  = "platform"
@@ -87,11 +87,11 @@ resource "aws_kms_key" "tfstate" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DenyDeletion"
-        Effect = "Deny"
+        Sid       = "DenyDeletion"
+        Effect    = "Deny"
         Principal = "*"
-        Action = ["kms:ScheduleKeyDeletion", "kms:Delete*"]
-        Resource = "*"
+        Action    = ["kms:ScheduleKeyDeletion", "kms:Delete*"]
+        Resource  = "*"
       },
       {
         Sid    = "AllowFoundationAdmin"
