@@ -49,6 +49,7 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+          if-no-files-found: ignore
 
   terraform:
     name: terraform fmt and validate
@@ -67,7 +68,6 @@ jobs:
 
       - name: Validate
         run: terraform -chdir=infrastructure/foundation init -backend=false -input=false && terraform -chdir=infrastructure/foundation validate
-          if-no-files-found: ignore
 
   docs:
     name: document integrity
