@@ -19,12 +19,12 @@
 #    to happen here instead.
 
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = "~> 1.16"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -32,7 +32,7 @@ terraform {
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
+      version = "~> 3.3"
     }
   }
 
@@ -133,7 +133,7 @@ resource "random_id" "environment_suffix" {
 # network policy exists has a window in which it can reach anything, and that window is
 # exactly when an attacker-controlled image would use it.
 
-resource "kubernetes_namespace" "preview" {
+resource "kubernetes_namespace_v1" "preview" {
   metadata {
     name   = var.environment_slug
     labels = local.tags
@@ -146,10 +146,10 @@ resource "kubernetes_namespace" "preview" {
   }
 }
 
-resource "kubernetes_network_policy" "default_deny" {
+resource "kubernetes_network_policy_v1" "default_deny" {
   metadata {
     name      = "default-deny"
-    namespace = kubernetes_namespace.preview.metadata[0].name
+    namespace = kubernetes_namespace_v1.preview.metadata[0].name
   }
 
   spec {
@@ -162,10 +162,10 @@ resource "kubernetes_network_policy" "default_deny" {
   }
 }
 
-resource "kubernetes_resource_quota" "preview" {
+resource "kubernetes_resource_quota_v1" "preview" {
   metadata {
     name      = "preview"
-    namespace = kubernetes_namespace.preview.metadata[0].name
+    namespace = kubernetes_namespace_v1.preview.metadata[0].name
   }
 
   spec {
@@ -264,7 +264,7 @@ output "database_identifier" {
 }
 
 output "namespace" {
-  value = kubernetes_namespace.preview.metadata[0].name
+  value = kubernetes_namespace_v1.preview.metadata[0].name
 }
 
 output "state_prefix" {
