@@ -59,7 +59,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: '1.9.5'
+          terraform_version: '1.16.1'
 
       # Infrastructure that is never validated is how broken HCL ships and fails during a
       # deploy, which is the worst possible time to discover it. Both modules are checked:
