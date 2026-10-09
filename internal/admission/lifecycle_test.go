@@ -20,13 +20,20 @@ import (
 // the fleet".
 
 // watchdogStore adapts the admission ledger to the watchdog's store interface.
+//
+// It is mutex-guarded because the concurrent expiry test drives one store from several
+// watchdog goroutines. A real store is concurrency-safe for the same reason: several
+// controllers share it.
 type watchdogStore struct {
+	mu   sync.Mutex
 	envs []ttlwatch.Environment
 	// marked records ids marked absent.
 	marked map[string]bool
 }
 
 func (s *watchdogStore) Expired(_ context.Context, limit int) ([]ttlwatch.Environment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := append([]ttlwatch.Environment(nil), s.envs...)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -35,6 +42,8 @@ func (s *watchdogStore) Expired(_ context.Context, limit int) ([]ttlwatch.Enviro
 }
 
 func (s *watchdogStore) MarkAbsent(_ context.Context, id string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.marked == nil {
 		s.marked = map[string]bool{}
 	}
