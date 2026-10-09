@@ -1,0 +1,36 @@
+{
+  "name": "preview-full",
+  "schema_version": "ghostlight.recipe/v1",
+  "image": "registry.ghostlight.test/previews/app@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "dependencies": [
+    {"kind": "postgres", "profile": "postgres-standard", "logical_key": "primary"},
+    {"kind": "redis", "profile": "preview-basic", "logical_key": "cache"},
+    {"kind": "object_store", "profile": "preview-basic", "logical_key": "artifacts"}
+  ],
+  "tests": ["smoke", "isolation"],
+  "profiles": ["postgres-standard", "preview-basic"],
+  "permissions": ["db:connect", "db:migrate", "topic:publish", "object:read", "object:write", "http:egress-allowlisted"],
+  "health": [
+    {
+      "name": "http-ready",
+      "endpoint": "/readyz",
+      "interval_seconds": 10,
+      "timeout_seconds": 2,
+      "failure_threshold": 3,
+      "success_threshold": 2
+    },
+    {
+      "name": "db-ready",
+      "endpoint": "postgres://primary/readyz",
+      "interval_seconds": 30,
+      "timeout_seconds": 5,
+      "failure_threshold": 2,
+      "success_threshold": 1
+    }
+  ],
+  "gates": [
+    {"name": "smoke", "required": true},
+    {"name": "isolation", "required": true},
+    {"name": "load", "required": false}
+  ]
+}
