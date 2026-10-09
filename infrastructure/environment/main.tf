@@ -79,14 +79,14 @@ locals {
   # reconciliation and the janitor both depend on it, so a resource that could be created
   # without it is unmanageable from the moment it exists.
   check "identity_is_not_customer_derived" {
-    condition = var.environment_id == regex("^env-[0-9A-HJKMNP-TV-Z]{26}$", var.environment_id) ? true : can(regex("^env-[0-9A-Z]{8,}$", var.environment_id))
+    condition     = var.environment_id == regex("^env-[0-9A-HJKMNP-TV-Z]{26}$", var.environment_id) ? true : can(regex("^env-[0-9A-Z]{8,}$", var.environment_id))
     error_message = "The environment id must be a platform-issued identifier, not a customer-supplied string."
   }
 
   tags = {
-    Platform                 = "ghostlight"
-    ManagedBy                = "terraform"
-    TerraformModule          = "environment"
+    Platform                  = "ghostlight"
+    ManagedBy                 = "terraform"
+    TerraformModule           = "environment"
     ghostlight_io_environment = var.environment_id
     ghostlight_io_generation  = var.generation
     # Deliberately NOT OwnershipScope: that tag is what marks a resource platform-owned,
@@ -159,8 +159,8 @@ resource "kubernetes_resource_quota" "preview" {
       "persistentvolumeclaims" = "0"
       # Counts rather than bytes, because a namespace that can request unbounded storage
       # can exhaust the node's ephemeral allocation.
-      "requests.storage" = var.max_storage
-      "services"         = var.max_services
+      "requests.storage"       = var.max_storage
+      "services"               = var.max_services
       "services.loadbalancers" = "0"
     }
   }
