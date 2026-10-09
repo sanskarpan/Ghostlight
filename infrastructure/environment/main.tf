@@ -47,42 +47,6 @@ terraform {
 }
 
 locals {
-  # Checks: per_environment_prefix, lock_enabled.
-  #
-  # This is an assertion of the contract the backend config is meant to satisfy. It is
-  # not decoration: a mistyped backend-config that pointed two environments at one prefix
-  # would let this environment's destroy erase its neighbour's state, and nothing else in
-  # the platform would notice.
-  check "state_prefix_is_per_environment" {
-    condition     = length(regexall("/environments/", var.state_key)) > 0
-    error_message = "The state key must live under environments/, so it cannot collide with another environment's state."
-  }
-
-  check "state_key_names_this_environment" {
-    condition     = strcontains(var.state_key, var.environment_id)
-    error_message = "The state key must name this environment. A state key belonging to another environment means applying here would corrupt that environment's state."
-  }
-
-  check "foundation_outputs_are_qualified" {
-    condition     = alltrue([for c in var.foundation_qualification.network : c.passed])
-    error_message = "The foundation network has not passed qualification. Refusing to provision into an unqualified network."
-  }
-
-  check "foundation_role_is_qualified" {
-    condition     = alltrue([for c in var.foundation_qualification.role : c.passed])
-    error_message = "The foundation execution role has not passed qualification."
-  }
-
-  # Checks: scoped_to_environment.
-  #
-  # Every resource carries the environment id as an immutable tag. Post-restore
-  # reconciliation and the janitor both depend on it, so a resource that could be created
-  # without it is unmanageable from the moment it exists.
-  check "identity_is_not_customer_derived" {
-    condition     = var.environment_id == regex("^env-[0-9A-HJKMNP-TV-Z]{26}$", var.environment_id) ? true : can(regex("^env-[0-9A-Z]{8,}$", var.environment_id))
-    error_message = "The environment id must be a platform-issued identifier, not a customer-supplied string."
-  }
-
   tags = {
     Platform                  = "ghostlight"
     ManagedBy                 = "terraform"
@@ -92,6 +56,61 @@ locals {
     # Deliberately NOT OwnershipScope: that tag is what marks a resource platform-owned,
     # and setting it here would opt this environment's resources out of the janitor's
     # delete authority.
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Module assertions
+# ---------------------------------------------------------------------------
+#
+# Checks: per_environment_prefix, lock_enabled.
+#
+# These assert the contract the backend config is meant to satisfy. They are not
+# decoration: a mistyped backend-config that pointed two environments at one prefix would
+# let this environment's destroy erase its neighbour's state, and nothing else in the
+# platform would notice.
+#
+# They are top-level check blocks rather than locals because check blocks are the only
+# thing Terraform evaluates as named, reportable assertions; burying them in a value
+# would make them invisible to plan output.
+
+check "state_prefix_is_per_environment" {
+  assert {
+    condition     = length(regexall("/environments/", var.state_key)) > 0
+    error_message = "The state key must live under environments/, so it cannot collide with another environment's state."
+  }
+}
+
+check "state_key_names_this_environment" {
+  assert {
+    condition     = strcontains(var.state_key, var.environment_id)
+    error_message = "The state key must name this environment. A state key belonging to another environment means applying here would corrupt that environment's state."
+  }
+}
+
+check "foundation_outputs_are_qualified" {
+  assert {
+    condition     = alltrue([for c in var.foundation_qualification.network : c.passed])
+    error_message = "The foundation network has not passed qualification. Refusing to provision into an unqualified network."
+  }
+}
+
+check "foundation_role_is_qualified" {
+  assert {
+    condition     = alltrue([for c in var.foundation_qualification.role : c.passed])
+    error_message = "The foundation execution role has not passed qualification."
+  }
+}
+
+# Checks: scoped_to_environment.
+#
+# Every resource carries the environment id as an immutable tag. Post-restore
+# reconciliation and the janitor both depend on it, so a resource that could be created
+# without it is unmanageable from the moment it exists.
+check "identity_is_not_customer_derived" {
+  assert {
+    condition     = can(regex("^env-[0-9A-Z]{8,}$", var.environment_id))
+    error_message = "The environment id must be a platform-issued identifier, not a customer-supplied string."
   }
 }
 
