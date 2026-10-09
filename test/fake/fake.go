@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -358,6 +359,25 @@ func (f *Fake) Count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.resources)
+}
+
+// Live returns every live native resource the provider holds.
+//
+// It exists for the G1 gate, which must read provider state directly rather than trust
+// the platform's own ledger — the ledger saying a resource is gone while the provider
+// still holds it is exactly the disagreement the gate is looking for.
+//
+// Handles are reported as "<environment>/<logicalKey>" so a gate failure names something
+// an operator can act on rather than an opaque handle.
+func (f *Fake) Live() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.resources))
+	for _, s := range f.resources {
+		out = append(out, s.alloc.EnvironmentID+"/"+s.logicalKey)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // HandleFor returns the native handle assigned to the nth (0-based) resource
