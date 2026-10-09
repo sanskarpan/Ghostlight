@@ -135,11 +135,46 @@ Required outputs:
 - [ ] Free/trial envelope that cannot produce unbounded cloud spend
 - [ ] **Sizing the trial against the floor.** A free tier carries the whole foundation and bills nothing, so a trial that allows concurrency consumes real money from the first signup. Cap trial concurrency tightly, or make the first tier meaningfully paid.
 
+### 6.1 Proposed packaging (9 October 2026 — PROPOSED, pending interviews and owner sign-off)
+
+Benchmarked 9 October 2026 against Vercel (seat + meters, spend-management opt-in),
+Netlify and Render (both abandoned per-seat in 2026), Depot ($0.04/min overage),
+Buildkite (per-active-user + vCPU-min), Railway (subscription-as-credit),
+Codespaces/Codesandbox (default $0 cap, freeze on exhaustion), Bunnyshell ($0.007
+env-min, closest direct comp), Qovery ($2,999/mo + BYOC). Our $0.0041/env-min
+marginal undercuts Bunnyshell, so the overage below is competitive and
+margin-positive — but $299 base is 12–15x Vercel/Render per-seat, defensible only
+because previews ship isolated data layers where they share them.
+
+- **Team: $299/mo** — 5 seats, 500 env-hours (~20 × 24h previews), 5 concurrent
+  slots. Overage **$0.35/env-hour ($0.0058/min, ~$8.40/24h)** ≈ 1.4x marginal → ~30%
+  variable margin. Storage-while-suspended and egress inside the env-hour meter (§3.2);
+  consumed-but-failed environments bill, failed-admission does not.
+- **Growth: $999/mo** — 20 seats, 2,500 env-hours, 20 concurrent slots (matches the
+  measured 20-slot ceiling). Same overage; −15% volume past 5,000 env-hours.
+- **Enterprise: custom annual + BYOC option** (control-plane fee, customer pays cloud
+  — the only honest answer to the $4,515 floor).
+- **Guardrails, not just prices:** concurrency as the cap (Trial 2 slots / 24h TTL /
+  ~50 env-hour hard cap then freeze; Team 5; Growth 20); default $0 overage limit with
+  opt-in overage (never silent auto-bill — the #1 Vercel complaint); 50/75/100%
+  alerts by email + webhook; subscription fee credited against usage so light months
+  cover floor. Publish the **$10,172/mo binding max** for the 20-slot reference
+  profile as a contractual cap. Margin quoted at worst case ($10,172 − $8,138 =
+  $2,034, ~20%), not at floor.
+- **Trial:** 14 days, 2 slots, 24h TTL, ~50 env-hours, then freeze — never auto-bill.
+
+Live risks this packaging does not solve: the floor needs ~15 Team customers per
+fleet or BYOC (selling single-tenant hosted at $299 loses money by construction);
+seat-vs-usage tension (Netlify/Render revolt — keep env-hour meter + slot cap paired
+with any seat line, included hours ≥100/seat, credit-offset visible on invoice);
+agent fan-out (PR storms need the $0 cap + TTL + auto-destroy); idle/suspended
+billing disputes (state it in plan terms).
+
 ## 7. Commercial evidence still required
 
-`research/PRODUCT-RESEARCH.md` names real competitors — Bunnyshell, Qovery, env0, Port, Harness, Gremlin — but contains **zero prices, zero plan structures, zero tier comparisons and zero TCO math**. For a pricing decision that is insufficient.
+`research/PRODUCT-RESEARCH.md` names real competitors — Bunnyshell, Qovery, env0, Port, Harness, Gremlin — but contains **zero prices, zero plan structures, zero tier comparisons and zero TCO math**. For a pricing decision that is insufficient. Retrieved 9 October 2026 (still needs design-partner interviews to become evidence): Vercel Pro $20/seat + meters ($0.007–$0.105/build-min, $0.128/CPU-hr, $0.15/GB egress); Netlify Pro $20 flat unlimited members + credit packs; Depot $20–$200 + $0.04/min overage; Buildkite $30/active-user + $0.004/vCPU-min; Render Pro $25 flat + $0.005/min builds; Railway $5–$20 subscription-as-credit; Codesandbox Scale $170/workspace + $0.15–$0.18/hr on-demand with freeze on exhaustion; Bunnyshell $0.007/env-min PAYG; Qovery Business $2,999/mo + $0.16/min overage; Codespaces $0.18–$2.88/hr with default $0 spend limit.
 
-- [ ] Real competitor price points and plan structures, with retrieval dates
+- [x] Competitor price points and plan structures, with retrieval dates (9 Oct 2026)
 - [ ] Design-partner willingness-to-pay interviews (`PRODUCT-STRATEGY.md:46` — 6–10 plus 3 design partners per the research plan; **none completed**)
 - [ ] Target ACV and a named margin floor
 - [ ] The go/no-go on whether hosted is viable at all, given the $4,515/month floor
