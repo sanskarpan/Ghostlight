@@ -186,8 +186,10 @@ because previews ship isolated data layers where they share them.
   by `internal/quota`'s fleet scope and observed only to alert; Trial 2 slots / 24h TTL
   / ~50 env-hour hard cap then freeze; default $0 overage limit with
   opt-in overage (never silent auto-bill — the #1 Vercel complaint); 50/75/100%
-  alerts by email + webhook (built by us; Stripe's are preview-gated); subscription fee credited against usage so light months
-  cover floor. Publish the **$10,172/mo binding max** for the 20-slot reference
+  alerts by email + webhook (built by us; Stripe's are preview-gated); **no rebate for
+  unused allowance** — a light month costs the plan fee, and a prepaid credit model
+  would introduce refund and breakage rules that a provider of ephemeral
+  infrastructure has no use for. Publish the **$10,172/mo binding max** for the 20-slot reference
   profile as a contractual cap. Margin quoted at worst case ($10,172 − $8,138 =
   $2,034, ~20%), not at floor.
 - **Trial:** 14 days, 2 slots, 24h TTL, ~50 env-hours, then freeze — never auto-bill.
