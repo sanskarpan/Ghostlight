@@ -91,14 +91,26 @@ Separately priced, separately metered, separately reserved (`PRD.md:41` requires
 
 Customer procurement commitments, customer AI safety budgets, and forecasted cloud invoices. `SAAS-FOUNDATION.md:29` is explicit: **never treat approved order value or a forecasted cloud invoice as subscription revenue.** Only confirmed provider observations become revenue.
 
-## 4. Meter definitions (must be approved before implementation)
+## 4. Meter definitions (approved 10 October 2026, ADR G-036)
 
-| Meter | Unit | Aggregation | Counting rule | Deduplication |
-|---|---|---|---|---|
-| `environment_hours` | hour | `sum` | admission to verified cleanup, per generation | environment+generation+window |
-| `concurrency_peak` | count | `last`, hourly sample | max concurrent ready environments | sample window |
-| `storage_gb_hours` | GB-hour | `sum` | retained bytes over time, including retained-during-suspension | env+window |
-| `experiment_runs` | run | `count` | admitted experiments, standard and dedicated priced separately | run ID |
+| Meter | Unit | Aggregation | Counting rule | Deduplication | Billed |
+|---|---|---|---|---|---|
+| `environment_hours` | hour | `sum` | admission to verified cleanup, per generation | environment+generation+window | yes |
+| `storage_gb_hours` | GB-hour | `sum` | retained bytes over time, including retained-during-suspension | env+window | yes |
+| `experiment_runs` | run | `count` | admitted experiments, standard and dedicated priced separately | run ID | yes |
+| `concurrency_peak` | count | `last`, hourly sample | max concurrent ready environments | sample window | **no — reporting and alerting only** |
+
+**Three metered quantities, not four.** `concurrency_peak` is a gauge, and Stripe's
+`last` formula takes "the most recent usage event's value *for the billing period*" —
+720 hourly samples would bill the customer's concurrency in the final hour of the
+month rather than their peak, and Stripe offers no `max` aggregation (confirmed
+against the meters API and Metronome's migration mapping: `MAX` is legacy-only).
+Fly.io, Netlify, Databricks and Lambda Provisioned Concurrency all model concurrency
+as a **configurable capacity limit**, never as an accumulating monthly quantity.
+Concurrency is therefore sold as a licensed per-slot charge fixed to the plan
+(§6.1) and enforced by `internal/quota`'s fleet scope; the observed peak exists only
+to alert a customer approaching their cap. Reporting it as a meter would produce a
+plausible-looking invoice for a number we never intended to charge.
 
 Decisions to make explicitly, because they change invoices:
 
@@ -107,7 +119,22 @@ Decisions to make explicitly, because they change invoices:
 - Is a preview that fails admission but reserved capacity billed? Recommend **no** — nothing was provisioned.
 - Minimum billable quantum per environment.
 
-**Never model concurrency as `sum`.** It is a gauge. Summing gauges produces nonsense that survives review because the code looks plausible.
+**Never model concurrency as `sum`.** It is a gauge. Summing gauges produces nonsense that survives review because the code looks plausible. Prometheus: "Do not use a counter to expose a value that can decrease"; you should never take a `rate()` of a gauge. Under ADR G-036 the stronger rule applies — concurrency is not metered at all.
+
+### 4.1 Emission rules the implementation must enforce (ADR G-036)
+
+Research on 10 October 2026 against Stripe Billing Meters, Lago, OpenMeter, Metronome and AWS cost allocation produced constraints that shape the code, not just the table:
+
+- **Our ledger row is the source of truth; Stripe's aggregate is a projection.** Rollups are recomputed by delete-and-insert, never incremented. Corrections are new events referencing the original, never edits — a disputed invoice must be replayable from the event sequence.
+- **The Stripe `identifier` is our ledger row ID, verbatim.** Stripe enforces uniqueness only within a rolling ~24h window, which is shorter than our retry horizon, so provider-side dedup is a convenience and not our idempotency guarantee. `ON CONFLICT (meter, dedup_key) DO NOTHING` is.
+- **Every emitted `timestamp` is read back from the ledger row, never from `time.Now()`.** A retry three days later must resend the identical body. The known trap: a dedup key or timestamp derived at send time turns every retry into a fresh billable event.
+- **No environment, generation or region dimensions in the Stripe payload.** Stripe accepts only 100 unique dimension combinations per customer per meter; identity stays in our ledger and the payload carries `stripe_customer_id` + `value` only.
+- **Bounds are checked before sending, never discovered at the provider.** Stripe accepts events within 35 calendar days past and 5 minutes future; beyond that the sender skips and alerts rather than dropping silently. Serialize per `(customer, meter)` — Stripe returns `409 too_many_concurrent_requests` on concurrent writes to the same pair.
+- **Emit on transitions, never buffer to a nightly flush.** Month-boundary flushes are where usage goes missing.
+- **Minimum billable quantum is applied in our ledger, per generation: 5 minutes**, rounded up to the quantum. Stripe's `transform_quantity` rounds the *period total*, which lets one two-second environment absorb another's remainder and quietly under-bills many-small-environment customers.
+- **Overage is graduated, never volume-tiered**, and volume tiers must never be combined with thresholds — Stripe documents the invoice total *dropping* as usage crosses a cheaper tier and the customer being credited.
+- **We build our own spend alerts.** Stripe's usage alerts are preview-gated, and Stripe's own documentation notes its metering layer should produce independent rollups that become the reconciliation source of truth.
+- **A zero-concurrency hour emits no event.** Provider APIs reject non-positive values on count meters; a `0` is a fault, not a measurement.
 
 ## 5. Billing integration constraints (ADR G-024)
 
@@ -135,7 +162,7 @@ Required outputs:
 - [ ] Free/trial envelope that cannot produce unbounded cloud spend
 - [ ] **Sizing the trial against the floor.** A free tier carries the whole foundation and bills nothing, so a trial that allows concurrency consumes real money from the first signup. Cap trial concurrency tightly, or make the first tier meaningfully paid.
 
-### 6.1 Proposed packaging (9 October 2026 — PROPOSED, pending interviews and owner sign-off)
+### 6.1 Commercial packaging (proposed 9 October 2026; **approved 10 October 2026**, ADR G-036)
 
 Benchmarked 9 October 2026 against Vercel (seat + meters, spend-management opt-in),
 Netlify and Render (both abandoned per-seat in 2026), Depot ($0.04/min overage),
@@ -154,10 +181,12 @@ because previews ship isolated data layers where they share them.
   measured 20-slot ceiling). Same overage; −15% volume past 5,000 env-hours.
 - **Enterprise: custom annual + BYOC option** (control-plane fee, customer pays cloud
   — the only honest answer to the $4,515 floor).
-- **Guardrails, not just prices:** concurrency as the cap (Trial 2 slots / 24h TTL /
-  ~50 env-hour hard cap then freeze; Team 5; Growth 20); default $0 overage limit with
+- **Guardrails, not just prices:** concurrency is **licensed capacity** fixed to the
+  plan (§4), not a metered quantity — Team 5 slots, Growth 20, enforced at admission
+  by `internal/quota`'s fleet scope and observed only to alert; Trial 2 slots / 24h TTL
+  / ~50 env-hour hard cap then freeze; default $0 overage limit with
   opt-in overage (never silent auto-bill — the #1 Vercel complaint); 50/75/100%
-  alerts by email + webhook; subscription fee credited against usage so light months
+  alerts by email + webhook (built by us; Stripe's are preview-gated); subscription fee credited against usage so light months
   cover floor. Publish the **$10,172/mo binding max** for the 20-slot reference
   profile as a contractual cap. Margin quoted at worst case ($10,172 − $8,138 =
   $2,034, ~20%), not at floor.
