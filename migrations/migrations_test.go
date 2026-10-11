@@ -529,8 +529,14 @@ func TestNoUnreviewedSecretColumns(t *testing.T) {
 	defer rows.Close()
 
 	// A hash is not a secret. Nothing else may hold credential material.
+	//
+	// invitations.token_hash is a SHA-256 of a membership token. The token is shown
+	// to the invitee once and never stored, so a database dump cannot hand out
+	// membership, and the hash cannot be replayed against the invitation endpoint
+	// because the endpoint compares digests rather than looking rows up by value.
 	allowed := map[string]bool{
 		"service_principals.secret_hash": true,
+		"invitations.token_hash":         true,
 	}
 	for rows.Next() {
 		var table, column string
