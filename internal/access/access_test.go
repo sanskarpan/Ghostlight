@@ -30,12 +30,14 @@ func fixture() Snapshot {
 			{ID: "u_other", Kind: PrincipalHuman, Email: "other@example.com"},
 			{ID: "sp_ci", Kind: PrincipalService, Email: "ci@example.com"},
 			{ID: "u_new", Kind: PrincipalHuman, Email: "new@example.com"},
+			{ID: "u_billing", Kind: PrincipalHuman, Email: "billing@example.com"},
 		},
 		Memberships: []Membership{
 			{PrincipalID: "u_owner", OrgID: "org_a", Role: RoleOwner},
-			{PrincipalID: "u_admin", OrgID: "org_a", Role: RoleAdmin},
-			{PrincipalID: "u_member", OrgID: "org_a", Role: RoleMember},
-			{PrincipalID: "sp_ci", OrgID: "org_a", Role: RoleMember},
+			{PrincipalID: "u_admin", OrgID: "org_a", Role: RolePlatformAdmin},
+			{PrincipalID: "u_member", OrgID: "org_a", Role: RoleDeveloper},
+			{PrincipalID: "u_billing", OrgID: "org_a", Role: RoleBillingAdmin},
+			{PrincipalID: "sp_ci", OrgID: "org_a", Role: RoleDeveloper},
 			{PrincipalID: "u_other", OrgID: "org_b", Role: RoleOwner},
 		},
 	}
@@ -251,12 +253,14 @@ func TestGrantValidationRefusesCrossOrganizationAndUnknownGrants(t *testing.T) {
 // An invitation that grants ownership would hand the holder untouchable power before
 // anyone has decided they should have it.
 func TestAnInvitationCannotGrantOwnership(t *testing.T) {
-	_, err := CreateInvitation("org_a", "new@example.com", RoleOwner, "u_owner", "tok", now, 0)
+	s := fixture()
+	_, err := s.Invite("org_a", "new@example.com", "u_owner", "tok", RoleOwner, now, 0)
 	mustErr(t, err, ErrInvalidInvitation, "invitation granting ownership")
 }
 
 func TestAnInvitationStoresOnlyTheTokenHash(t *testing.T) {
-	inv, err := CreateInvitation("org_a", "new@example.com", RoleMember, "u_owner", "secret-token", now, 0)
+	s := fixture()
+	inv, err := s.Invite("org_a", "new@example.com", "u_owner", "secret-token", RoleDeveloper, now, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -273,7 +277,7 @@ func TestAnInvitationStoresOnlyTheTokenHash(t *testing.T) {
 
 func TestAnInvitationIsSingleUse(t *testing.T) {
 	s := fixture()
-	inv, err := CreateInvitation("org_a", "member@example.com", RoleMember, "u_owner", "tok", now, 0)
+	inv, err := s.Invite("org_a", "member@example.com", "u_owner", "tok", RoleDeveloper, now, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -285,7 +289,7 @@ func TestAnInvitationIsSingleUse(t *testing.T) {
 
 	// A fresh invite for somebody who is not yet a member.
 	s.Principals = append(s.Principals, Principal{ID: "u_new", Kind: PrincipalHuman, Email: "new@example.com"})
-	inv2, err := CreateInvitation("org_a", "new@example.com", RoleMember, "u_owner", "tok2", now, 0)
+	inv2, err := s.Invite("org_a", "new@example.com", "u_owner", "tok2", RoleDeveloper, now, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -298,7 +302,7 @@ func TestAnInvitationIsSingleUse(t *testing.T) {
 func TestAnInvitationExpires(t *testing.T) {
 	s := fixture()
 	s.Principals = append(s.Principals, Principal{ID: "u_new", Kind: PrincipalHuman, Email: "new@example.com"})
-	inv, err := CreateInvitation("org_a", "new@example.com", RoleMember, "u_owner", "tok", now, time.Hour)
+	inv, err := s.Invite("org_a", "new@example.com", "u_owner", "tok", RoleDeveloper, now, time.Hour)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -314,7 +318,7 @@ func TestAnInvitationExpires(t *testing.T) {
 // An invitation to an address nobody has proven is an open door with a delay on it.
 func TestAnInvitationRequiresAVerifiedAccount(t *testing.T) {
 	s := fixture()
-	inv, err := CreateInvitation("org_a", "stranger@example.com", RoleMember, "u_owner", "tok", now, 0)
+	inv, err := s.Invite("org_a", "stranger@example.com", "u_owner", "tok", RoleDeveloper, now, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -327,7 +331,7 @@ func TestAnInvitationRequiresAVerifiedAccount(t *testing.T) {
 // forwards it.
 func TestAnInvitationIsBoundToTheInvitedEmail(t *testing.T) {
 	s := fixture()
-	inv, err := CreateInvitation("org_a", "new@example.com", RoleMember, "u_owner", "tok", now, 0)
+	inv, err := s.Invite("org_a", "new@example.com", "u_owner", "tok", RoleDeveloper, now, 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -336,7 +340,7 @@ func TestAnInvitationIsBoundToTheInvitedEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if m.PrincipalID != "u_new" || m.OrgID != "org_a" || m.Role != RoleMember {
+	if m.PrincipalID != "u_new" || m.OrgID != "org_a" || m.Role != RoleDeveloper {
 		t.Fatalf("accepted as %+v", m)
 	}
 }
@@ -418,13 +422,13 @@ func TestMemberListingIsStable(t *testing.T) {
 			}
 		}
 	}
-	if len(first) != 4 {
-		t.Fatalf("org_a lists %d members, want 4", len(first))
+	if len(first) != 5 {
+		t.Fatalf("org_a lists %d members, want 5", len(first))
 	}
 }
 
 func TestMembershipActivityIsReportedCorrectly(t *testing.T) {
-	m := Membership{PrincipalID: "u", OrgID: "o", Role: RoleMember}
+	m := Membership{PrincipalID: "u", OrgID: "o", Role: RoleDeveloper}
 	if !m.Active(now) {
 		t.Fatal("a membership with no revocation is active")
 	}
@@ -450,4 +454,124 @@ func TestTeardownCannotBeWidenedToAWritePermission(t *testing.T) {
 	if !isTeardown(PermEnvAbort) || !isTeardown(PermEnvRead) {
 		t.Fatal("abort and evidence reading must remain always available")
 	}
+}
+
+// The vocabulary here must be the vocabulary in the database. Drift means the
+// persistence layer writes a role the CHECK constraint rejects, and the failure lands
+// on an insert at run time instead of in review.
+func TestEveryDeclaredRoleIsUsable(t *testing.T) {
+	for _, r := range []OrgRole{RoleOwner, RolePlatformAdmin, RoleBillingAdmin,
+		RoleDeveloper, RoleReviewer, RoleAuditor, RoleSupport, RoleReliabilityEngineer} {
+		if !r.Valid() {
+			t.Fatalf("%s is declared but has no grants", r)
+		}
+	}
+	if OrgRole("wizard").Valid() {
+		t.Fatal("an undeclared role must not be accepted")
+	}
+}
+
+// Billing is a separate job. The person who administers an organization must not also
+// be able to redirect the subscription they were given authority over, and the person
+// who pays must not be able to administer repositories.
+func TestBillingIsSeparatedFromAdministration(t *testing.T) {
+	// A platform admin administers repositories and members; that is the job. What
+	// they must not have is the ability to redirect the subscription.
+	for _, p := range []Permission{PermMemberInvite, PermMemberRevoke, PermRepoAdmin} {
+		if !RolePlatformAdmin.Effective(p) {
+			t.Fatalf("a platform admin must hold %s", p)
+		}
+	}
+	if RolePlatformAdmin.Effective(PermBillingWrite) {
+		t.Fatal("a platform admin must not be able to redirect the subscription")
+	}
+	// And the billing role administers billing and nothing else: the person who pays
+	// must not be able to invite colleagues or administer repositories.
+	for _, p := range []Permission{PermMemberInvite, PermMemberRevoke, PermRepoAdmin, PermEnvCreate} {
+		if RoleBillingAdmin.Effective(p) {
+			t.Fatalf("a billing admin must not hold %s", p)
+		}
+	}
+	if !RoleBillingAdmin.Effective(PermBillingWrite) || !RoleBillingAdmin.Effective(PermBillingRead) {
+		t.Fatal("a billing admin must be able to manage billing")
+	}
+	if !RolePlatformAdmin.Effective(PermBillingRead) {
+		t.Fatal("a platform admin must be able to see what they are being billed")
+	}
+	// And the decision holds end to end, not just in the grant table.
+	s := fixture()
+	if _, err := s.Authorize("u_billing", "org_a", "", PermBillingWrite, now); err != nil {
+		t.Fatalf("a billing admin should manage billing: %v", err)
+	}
+	if _, err := s.Authorize("u_billing", "org_a", "", PermMemberInvite, now); err == nil {
+		t.Fatal("a billing admin must not invite")
+	}
+	if _, err := s.Authorize("u_admin", "org_a", "", PermBillingWrite, now); err == nil {
+		t.Fatal("a platform admin must not be able to change the subscription")
+	}
+}
+
+// Support can stop a runaway preview. It cannot start one or push to a branch.
+func TestStaffRolesCannotChangeCustomerCode(t *testing.T) {
+	for _, r := range []OrgRole{RoleSupport, RoleReliabilityEngineer, RoleAuditor} {
+		if !r.IsStaff() {
+			t.Fatalf("%s should be a staff role", r)
+		}
+		for _, p := range []Permission{PermRepoWrite, PermEnvCreate, PermMemberInvite, PermBillingWrite} {
+			if r.Effective(p) {
+				t.Fatalf("staff role %s must not hold %s", r, p)
+			}
+		}
+	}
+	for _, r := range []OrgRole{RoleOwner, RolePlatformAdmin, RoleDeveloper, RoleReviewer, RoleBillingAdmin} {
+		if r.IsStaff() {
+			t.Fatalf("%s is a customer role and must not be classified as staff", r)
+		}
+	}
+}
+
+// A credential that can issue invitations can delegate itself a foothold in an
+// organization it was never given.
+func TestACredentialCannotInvite(t *testing.T) {
+	s := fixture()
+	_, err := s.Invite("org_a", "new@example.com", "sp_ci", "tok", RoleDeveloper, now, 0)
+	mustErr(t, err, ErrServicePrincipalCannotInvite, "service principal inviting")
+}
+
+// Without verifying the inviter this would mint an invitation into any organization on
+// request, and the schema's foreign key would be the only thing standing in the way.
+func TestAnOutsiderCannotInviteIntoAnOrganization(t *testing.T) {
+	s := fixture()
+	_, err := s.Invite("org_a", "new@example.com", "u_other", "tok", RoleDeveloper, now, 0)
+	mustErr(t, err, ErrNotAMember, "inviter who is not a member")
+
+	_, err = s.Invite("org_b", "new@example.com", "u_owner", "tok", RoleDeveloper, now, 0)
+	mustErr(t, err, ErrNotAMember, "inviting into another organization")
+}
+
+func TestADeveloperCannotInvite(t *testing.T) {
+	s := fixture()
+	_, err := s.Invite("org_a", "new@example.com", "u_member", "tok", RoleDeveloper, now, 0)
+	mustErr(t, err, ErrNotAnAdmin, "developer inviting")
+}
+
+// Platform staff are not customers. An invitation must never be the way a support
+// engineer acquires membership in a tenant.
+func TestAnInvitationCannotGrantAStaffRole(t *testing.T) {
+	s := fixture()
+	for _, role := range []OrgRole{RoleSupport, RoleAuditor, RoleReliabilityEngineer} {
+		_, err := s.Invite("org_a", "new@example.com", "u_owner", "tok", role, now, 0)
+		mustErr(t, err, ErrInvalidInvitation, "invitation granting a staff role")
+	}
+}
+
+func TestARevokedInviterCannotInvite(t *testing.T) {
+	s := fixture()
+	for i := range s.Memberships {
+		if s.Memberships[i].PrincipalID == "u_admin" {
+			s.Memberships[i].RevokedAt = now
+		}
+	}
+	_, err := s.Invite("org_a", "new@example.com", "u_admin", "tok", RoleDeveloper, now, 0)
+	mustErr(t, err, ErrRevoked, "revoked inviter")
 }
