@@ -39,17 +39,90 @@ import (
 )
 
 // OrgRole is an organization's authority level.
+//
+// These names are the memberships.role vocabulary in the platform schema, and
+// TestRolesMatchTheSchemaVocabulary in the migrations package fails if the two ever
+// drift apart. That test exists because this list was once written independently and
+// disagreed with the database it was supposed to describe: the persistence layer
+// would have written a role the CHECK constraint rejects, and the failure would have
+// appeared at the insert rather than at review.
 type OrgRole string
 
 const (
 	// RoleOwner holds the organization and cannot be reduced to a lesser role by
-	// anyone else, including an admin.
+	// anyone else, including a platform admin.
 	RoleOwner OrgRole = "owner"
-	// RoleAdmin manages members, repositories and billing.
-	RoleAdmin OrgRole = "admin"
-	// RoleMember works in repositories they are granted.
-	RoleMember OrgRole = "member"
+	// RolePlatformAdmin administers repositories and members. It deliberately does
+	// not grant billing:write, so the person who administers an organization cannot
+	// also redirect the subscription they were given authority over.
+	RolePlatformAdmin OrgRole = "platform_admin"
+	// RoleBillingAdmin manages payment methods and invoices, and nothing else.
+	RoleBillingAdmin OrgRole = "billing_admin"
+	// RoleDeveloper works in repositories: reads, writes and previews.
+	RoleDeveloper OrgRole = "developer"
+	// RoleReviewer reads and comments without changing anything.
+	RoleReviewer OrgRole = "reviewer"
+	// RoleAuditor reads everything and changes nothing, including billing.
+	RoleAuditor OrgRole = "auditor"
+	// RoleSupport is platform staff: reads preview state and can stop a preview.
+	RoleSupport OrgRole = "support"
+	// RoleReliabilityEngineer is platform staff operating the fleet.
+	RoleReliabilityEngineer OrgRole = "reliability_engineer"
 )
+
+// StaffRoles are the roles platform staff hold. They are not customer roles and must
+// never appear on a customer invitation, which the schema enforces with a CHECK
+// constraint as well as here.
+var StaffRoles = []OrgRole{RoleAuditor, RoleSupport, RoleReliabilityEngineer}
+
+// IsStaff reports whether a role is a platform staff role.
+func (r OrgRole) IsStaff() bool {
+	for _, s := range StaffRoles {
+		if s == r {
+			return true
+		}
+	}
+	return false
+}
+
+// roleGrants is what each organization role may do on its own.
+//
+// Note what is absent from RoleDeveloper: billing, membership management and
+// repository administration. A developer's reach comes from repository grants, not
+// from their role, which is why joining an organization does not silently expose
+// every repository in it.
+//
+// Note also what is absent from every staff role: env:create and repo:write. Support
+// can stop a runaway preview; it cannot start one or push to a customer's branch.
+var roleGrants = map[OrgRole]map[Permission]bool{
+	RoleOwner: {
+		PermRepoRead: true, PermRepoWrite: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
+		PermMemberInvite: true, PermMemberRevoke: true, PermBillingRead: true,
+		PermBillingWrite: true, PermRepoAdmin: true,
+	},
+	RolePlatformAdmin: {
+		PermRepoRead: true, PermRepoWrite: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
+		PermMemberInvite: true, PermMemberRevoke: true, PermBillingRead: true, PermRepoAdmin: true,
+	},
+	RoleBillingAdmin: {
+		PermBillingRead: true, PermBillingWrite: true,
+	},
+	RoleDeveloper: {
+		PermRepoRead: true, PermRepoWrite: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
+	},
+	RoleReviewer: {
+		PermRepoRead: true, PermEnvRead: true,
+	},
+	RoleAuditor: {
+		PermRepoRead: true, PermEnvRead: true, PermBillingRead: true,
+	},
+	RoleSupport: {
+		PermEnvRead: true, PermEnvAbort: true,
+	},
+	RoleReliabilityEngineer: {
+		PermRepoRead: true, PermEnvRead: true, PermEnvAbort: true,
+	},
+}
 
 // Permission is a thing a principal may do.
 type Permission string
@@ -86,26 +159,6 @@ func AllPermissions() []Permission {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
-}
-
-// roleGrants is what each organization role may do on its own.
-//
-// Note what is absent from RoleMember: billing, membership management and repository
-// administration. A member's reach comes from repository grants, not from their role,
-// which is why joining an organization does not silently expose every repository in it.
-var roleGrants = map[OrgRole]map[Permission]bool{
-	RoleOwner: {
-		PermRepoRead: true, PermRepoWrite: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
-		PermMemberInvite: true, PermMemberRevoke: true, PermBillingRead: true,
-		PermBillingWrite: true, PermRepoAdmin: true,
-	},
-	RoleAdmin: {
-		PermRepoRead: true, PermRepoWrite: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
-		PermMemberInvite: true, PermMemberRevoke: true, PermBillingRead: true, PermRepoAdmin: true,
-	},
-	RoleMember: {
-		PermRepoRead: true, PermEnvCreate: true, PermEnvRead: true, PermEnvAbort: true,
-	},
 }
 
 // Effective reports whether a role grants a permission by itself.
@@ -447,7 +500,7 @@ func (s Snapshot) RemoveMember(orgID, principalID, actorID string, now time.Time
 	if err != nil {
 		return err
 	}
-	if actor.Role != RoleOwner && actor.Role != RoleAdmin {
+	if actor.Role != RoleOwner && actor.Role != RolePlatformAdmin {
 		return fmt.Errorf("%w: %s", ErrNotAnAdmin, actor.Role)
 	}
 	if target.Role == RoleOwner {
@@ -489,12 +542,45 @@ func (s Snapshot) GrantOwnership(orgID, principalID, actorID string, now time.Ti
 	return nil
 }
 
-// CreateInvitation returns an invitation and its token. Only the token hash is
-// returned; the token itself is shown to the customer once and never stored, so a
-// database dump does not hand out membership.
-func CreateInvitation(orgID, email string, role OrgRole, invitedBy string, token string, now time.Time, ttl time.Duration) (Invitation, error) {
-	if orgID == "" || email == "" || token == "" || invitedBy == "" {
+// Invite issues an invitation on behalf of a named inviter.
+//
+// The inviter is verified rather than trusted: they must be an active member of the
+// organization being invited into. Without that check this function would happily
+// mint an invitation into any organization on request, and the schema's foreign key
+// would be the only thing standing between a stranger and somebody else's tenant.
+//
+// Only a person may invite. A credential that can issue membership invitations can
+// delegate itself a foothold in an organization it was never given, which is why
+// service principals carry no member:invite grant and are refused here rather than
+// only at authorization time.
+//
+// Only the token hash is returned. The token itself is shown to the invitee once and
+// never stored, so a database dump cannot hand out membership.
+func (s Snapshot) Invite(orgID, email, inviterID, token string, role OrgRole, now time.Time, ttl time.Duration) (Invitation, error) {
+	if orgID == "" || email == "" || token == "" || inviterID == "" {
 		return Invitation{}, ErrInvalidInvitation
+	}
+	inviter, ok := s.LookupPrincipal(inviterID)
+	if !ok {
+		return Invitation{}, ErrNotAMember
+	}
+	if inviter.Kind == PrincipalService {
+		return Invitation{}, fmt.Errorf("%w: %s", ErrServicePrincipalCannotInvite, inviterID)
+	}
+	m, err := s.membership(inviterID, orgID)
+	if err != nil {
+		return Invitation{}, err
+	}
+	if !m.Active(now) || m.Suspended {
+		return Invitation{}, fmt.Errorf("%w: %s cannot invite", ErrRevoked, inviterID)
+	}
+	if !m.Role.Effective(PermMemberInvite) {
+		return Invitation{}, fmt.Errorf("%w: %s may not invite", ErrNotAnAdmin, m.Role)
+	}
+	if role.IsStaff() {
+		// Platform staff are not customers. An invitation must never be the way a
+		// support engineer or an auditor acquires membership in a tenant.
+		return Invitation{}, fmt.Errorf("%w: cannot invite as staff role %s", ErrInvalidInvitation, role)
 	}
 	if !role.Valid() || role == RoleOwner {
 		// An invitation that grants ownership lets whoever holds the token become
@@ -509,7 +595,7 @@ func CreateInvitation(orgID, email string, role OrgRole, invitedBy string, token
 		OrgID:     orgID,
 		Email:     email,
 		Role:      role,
-		InvitedBy: invitedBy,
+		InvitedBy: inviterID,
 		ExpiresAt: now.Add(ttl),
 	}, nil
 }
