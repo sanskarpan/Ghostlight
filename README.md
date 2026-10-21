@@ -76,6 +76,8 @@ than a rewrite.
 | [SECURITY.md](docs/SECURITY.md) | Untrusted PR code and platform privilege boundaries |
 | [SRE.md](docs/SRE.md) | Platform SLOs, capacity/cost, rollout, backup and telemetry |
 | [RUNBOOKS.md](docs/RUNBOOKS.md) | Cleanup, capacity, failed experiments and stale results |
+| [PRIVACY.md](docs/PRIVACY.md) | Jurisdictional scope, what is held, subprocessors, rights and transfers |
+| [LEGAL-OPERATIONS.md](docs/LEGAL-OPERATIONS.md) | Accountable owners, launch review, breach response and rights requests |
 | [TESTING.md](docs/TESTING.md) | Controller/model/security/cloud qualification |
 | [QUALITY-REVIEW.md](docs/QUALITY-REVIEW.md) | Independent audit findings, dispositions and verification links |
 | [CHECKLIST.md](docs/CHECKLIST.md) | Build order and required release evidence |
