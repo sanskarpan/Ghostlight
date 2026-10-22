@@ -2,6 +2,8 @@
 
 These procedures describe tooling to implement. All actions are scoped/audited through operator APIs; raw provider console intervention is documented break-glass, not normal lifecycle control.
 
+The runbooks for the operator control surfaces — key rotation, on-call ownership, coverage scorecards, drift remediation, evidence passports, service status, incident communications, support requests and erasure — are in [OPERATOR-RUNBOOKS.md](OPERATOR-RUNBOOKS.md).
+
 ## GB-01: Preview provision stalled
 
 Inspect action/generation, runner native job, state lock and external resource observations. Determine whether failure is retryable, terminal or uncertain. Recheck current PR head/expiry; stale work should cancel, not continue toward ready. If a create timed out, observe owner-tagged resources before retry. Terminate/confirm old runner before a replacement apply. Exit with current generation ready or an explicit failed state and complete resource ledger.
