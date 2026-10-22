@@ -401,3 +401,27 @@ func copyFixture(f Fixture) Fixture {
 	}
 	return out
 }
+
+// LooksLikeCredential reports whether a value is shaped like a real credential.
+//
+// The shapes are the ones that show up in the wild: an AWS access key id, a PEM
+// header, and the three provider prefixes that prefix a live token. The check lives
+// here, exported, because the same shapes must be refused wherever a value could
+// reach a customer — a fixture that must be synthetic, and a response that must not
+// carry a secret.
+//
+// The error deliberately never contains the value. Putting a refused secret into an
+// error message copies it into logs and support bundles, which is the very leak the
+// check exists to prevent, and the same rule applies here.
+func LooksLikeCredential(value string) bool {
+	if strings.Contains(value, "AKIA") || strings.Contains(value, "-----BEGIN") {
+		return true
+	}
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{"sk_live_", "ghp_", "xoxb-"} {
+		if strings.Contains(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
