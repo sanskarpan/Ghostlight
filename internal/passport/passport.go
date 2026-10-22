@@ -271,6 +271,15 @@ func (r Registry) passport(id string) (Passport, bool) {
 	return Passport{}, false
 }
 
+// Passport returns an issued passport by identifier.
+//
+// It is the read side of the registry, and it exists so that a transport can resolve a
+// passport before serving it without reaching for the unexported lookup.
+func (r Registry) Passport(id string) (Passport, bool) {
+	p, ok := r.passport(id)
+	return p, ok
+}
+
 // key looks a signing key up by identifier.
 func (r Registry) key(id string) (Key, bool) {
 	for _, k := range r.Keys {

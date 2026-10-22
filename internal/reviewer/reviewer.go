@@ -597,6 +597,15 @@ func (r Room) RecordResult(threadID string, res InvariantResult, p Principal, at
 	return r, nil
 }
 
+// Thread returns a thread by identifier.
+//
+// It is the read side of the room, and it exists so that a transport can resolve a
+// thread before acting on it without reaching for the unexported lookup.
+func (r Room) Thread(id string) (Thread, bool) {
+	t, ok := r.thread(id)
+	return t, ok
+}
+
 // Findings returns a thread's findings, sorted by identifier.
 func (r Room) Findings(threadID string) []Finding {
 	t, ok := r.thread(threadID)

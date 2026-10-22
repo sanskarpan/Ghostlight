@@ -156,7 +156,7 @@ func Validate(r Recipe, c Catalog) error {
 	if !containsStr(c.SchemaVersions, r.SchemaVersion) {
 		errs = append(errs, fmt.Errorf("%w: %q", ErrUnknownSchema, r.SchemaVersion))
 	}
-	if err := validateImage(r.Image); err != nil {
+	if err := ValidateImage(r.Image); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -230,12 +230,12 @@ func Validate(r Recipe, c Catalog) error {
 	return errors.Join(errs...)
 }
 
-// validateImage refuses anything but a digest-pinned reference.
+// ValidateImage refuses anything but a digest-pinned reference.
 //
 // A tag can move between review and run. A digest cannot. "latest", an untagged name,
 // and a tag without a digest all mean the preview may run code nobody reviewed, so all
 // three are refused. The digest form is name@sha256:<hex>.
-func validateImage(image string) error {
+func ValidateImage(image string) error {
 	if image == "" {
 		return fmt.Errorf("%w: image", ErrIncomplete)
 	}
@@ -314,6 +314,6 @@ func Digest(r Recipe) string {
 // Summarize renders a recipe for review.
 func Summarize(r Recipe) string {
 	return fmt.Sprintf("recipe %s schema=%s image-pinned=%v deps=%d tests=%d health=%d gates=%d perms=%d",
-		r.Name, r.SchemaVersion, validateImage(r.Image) == nil,
+		r.Name, r.SchemaVersion, ValidateImage(r.Image) == nil,
 		len(r.Dependencies), len(r.Tests), len(r.Health), len(r.Gates), len(r.Permissions))
 }
