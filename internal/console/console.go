@@ -649,6 +649,7 @@ var canonicalGlyphs = map[string]string{
 	"pending":   "○",
 	"loading":   "◌",
 	"running":   "◐",
+	"complete":  "●",
 	"succeeded": "✓",
 	"failed":    "✗",
 	"uncertain": "?",
