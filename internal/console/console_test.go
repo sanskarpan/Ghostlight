@@ -473,6 +473,37 @@ func TestHappyPathBadge(t *testing.T) {
 	}
 }
 
+// Every state a phase can carry needs a badge, including a completed phase. The
+// renderer found this gap: complete was a phase state with no canonical glyph, so
+// the one state every successful run ends in could not be drawn without relying on
+// colour. Complete also cannot borrow the succeeded glyph, because two states that
+// share a shape can only be told apart by colour.
+func TestEveryPhaseStateHasItsOwnGlyph(t *testing.T) {
+	states := []PhaseState{PhasePending, PhaseRunning, PhaseComplete, PhaseFailed, PhaseUncertain, PhaseBlocked}
+	badges := make([]Badge, 0, len(states))
+	for _, state := range states {
+		badge, err := NewBadge(string(state), string(state))
+		if err != nil {
+			t.Fatalf("NewBadge(%q): %v", state, err)
+		}
+		badges = append(badges, badge)
+	}
+	if _, err := NewBadges(badges); err != nil {
+		t.Fatalf("NewBadges: %v", err)
+	}
+	complete, ok := GlyphFor(string(PhaseComplete))
+	if !ok {
+		t.Fatalf("GlyphFor(%q) reports no glyph", PhaseComplete)
+	}
+	succeeded, ok := GlyphFor(string(StateSucceeded))
+	if !ok {
+		t.Fatalf("GlyphFor(%q) reports no glyph", StateSucceeded)
+	}
+	if complete == succeeded {
+		t.Errorf("complete and succeeded share the glyph %q", complete)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Charts and their table alternatives
 // ---------------------------------------------------------------------------
