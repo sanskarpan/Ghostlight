@@ -39,11 +39,59 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G3.7 SLO burn-rate instrumentation | **[DONE]** | `internal/slo` (12); closed via #129. Pipeline, alerting + deployed proof deferred |
 | G3 gate no faked passes, no stale qualifications | **[DONE]** | `test/gate` g3 suite (10) — adversarial proof over harness+evidence+invalidation+confidence+store; closed via #130 |
 | G0.7 supply-chain admission policy | **[DONE]** | `internal/supplychain` (11); closed via #131. Sandbox, CVE feed, SBOM, AMI policy deferred |
-| GQ.1, GQ.2, GQ.4–GQ.6 | decisions recorded 9 Oct 2026 | G-032 sandbox (Kata+CLH, deferral kept), G-033 Temporal (permits+budget hybrid), G-025 WorkOS selected, G-034 shared-instance isolation; owner sign-off + measurements outstanding |
+| G2.7 sandbox RuntimeClass | deferred | ADR G-027/G-029; gated on SECURITY.md 1.1 re-entry; blocked by GQ.1 |
+| G2.8 Temporal enforcement | **[DONE]** | `internal/temporalgate` (17); closed via #134. Cloud wiring + measurements + sign-off deferred |
+| G2 gate | open | needs deployed proof at service authorization + complete teardown |
+| G4.1–G4.6, G4 gate | deferred | post-revenue gate per ADR G-027; GQ.3 still measures the fixed-fleet floor |
+| G5.1–G5.6, G5 gate | deferred | post-revenue gate per ADR G-027; G-013 still forbids auto-merge and production mutation |
+| G6.1 fleet soak | open | needs fleet + measured create/update/cleanup + orphan inventory |
+| G6.2 DB restore | open | needs restore execution + beyond-cut reconciliation proof |
+| G6.3 upgrade exercise | open | needs old module/state/runner versions against the platform |
+| G6.4 operator/incident readiness | **[DONE]** | `internal/{oncall,communications,operator}` (63+66+36) + `cmd/operator` + `docs/OPERATOR-RUNBOOKS.md`; closed via #169/#170/#171 |
+| G6.5 teardown report | open | needs measured provisioning/scaling/recovery/cost data |
+| G6.6 API lifecycle | **[DONE]** | `internal/apilifecycle` (23); CLI inherits the policy |
+| G6 gate | open | needs signed fleet/security/cleanup/recovery evidence + operational owner |
+| G7.1 onboarding/abuse | **[DONE]** | `internal/onboarding` (15) |
+| G7.2 access/persistence | **[DONE]** | `internal/access` (38) + `migrations/0003` (17, real PostgreSQL) |
+| G7.3 subscription/billing | **[WIP]** | meters/entitlements/subscription + `internal/{billing (14),stripe (7),providerinbox (15)}`; transport done, live sandbox + sign-off remain; issue #54 open |
+| G7.4 GitHub wizard | **[DONE]** | `internal/installation` (24) |
+| G7.5 template catalog | **[DONE]** | `internal/templates` (28) |
+| G7.6 preview gateway | **[DONE]** | `internal/gateway` (23); running gateway + DNS deferred to G2.9 |
+| G7.7 console/reviewer/passport | **[DONE]** | reviewer 19 + passport 18 + console 65 + consolerender (18 + 12 support-rendering) + gate suites; issues #58 closed via #173. Browser WCAG stays under G7.9 |
+| G7.8 support/lifecycle | **[DONE]** | tenant 19 + erasure 15 + support 37 + consolesupport 28 + render 12 + gate 10; issue #59 closed via #173. Full import deferred per SCOPE-RETUNE |
+| G7.9 qualification | **[WIP]** | `internal/a11ygate` (7) + g7 a11y gate (2) + g7.9 privacy gate (5); browser half, study, sandbox, sign-off remain; issue #60 open |
+| G7.10 identity | **[WIP]** | `internal/identity` (24) policy layer; blocked by GQ.4; WorkOS/AuthKit/SCIM/sandbox remain |
+| G7.11 privacy/legal | **[WIP]** | `internal/legal` (17) + `docs/PRIVACY.md` + `docs/LEGAL-OPERATIONS.md`; owners unassigned, legal review + DPAs + walkthrough remain |
+| G7.12 design partners | blocked | blocked by G7.9/G7.10/G7.11; no real customer data before G7.11 |
+| G7 gate | open | needs end-to-end pass incl. SaaS subscription + accessible lifecycle |
+| G8.1 API/CLI parity | **[DONE]** | `internal/contract` (20) |
+| G8.2 topology | **[DONE]** | `internal/topology` (50); independently qualified templates not claimed |
+| G8.3 fixtures | **[DONE]** | `internal/fixtures` (37) |
+| G8.4 schedule | **[DONE]** | `internal/schedule` (45); closes Q-15 |
+| G8.5 comparison | deferred | post-revenue unless a design partner requires it |
+| G8.6 replay | **[DONE]** | `internal/replay` (41) |
+| G8.7 approvals | **[DONE]** | `internal/approvals` (29) |
+| G8.8 scheduling | **[DONE]** | `internal/scheduling` (17) |
+| G8.9 connectors | **[DONE]** | `internal/connector` (27) |
+| G8 gate | **[WIP]** | `test/gate` g8 team suite (9); comparison, invalidation re-proof, fleet envelope remain |
+| G9.4 policy publish | **[DONE]** | `internal/policypublish` (21) |
+| G9.5 drift | **[DONE]** | `internal/drift` (29) |
+| G9.6 coverage | **[DONE]** | `internal/coverage` (26) |
+| G9.7 campaigns | **[DONE]** | `internal/campaigns` (28) |
+| G9.8 evidence export | **[DONE]** | `internal/evidenceexport` (32) |
+| G9.1–G9.3, G9.9, G9 gate | deferred/open | G9 builds on signed customer request; G9.2 blocked by G9.3; G9.9 closes Q-20 with matrix + drill |
+| G10.1–G10.4, discovery gate | deferred | discovery horizon; evidence-backed go/no-go per idea |
+| GQ.1 sandbox feasibility | **[WIP]** | decision G-032 recorded 9 Oct 2026; measured overhead, CPU penalty, latencies, guest checks, sign-off outstanding |
+| GQ.2 Temporal capacity | **[WIP]** | decision G-033 recorded 9 Oct 2026; prototype measurements + budget-reframe sign-off outstanding |
+| GQ.3 cost model | **[DONE]** | closed 10 Oct 2026 per ADR G-036; WTP interviews remain under G7.12 |
+| GQ.4 payment/identity | **[WIP]** | decisions G-024/G-025/G-030 recorded; providerinbox (15) + billing + stripe done; sandbox integrations + sign-off remain; issue #93 open |
+| GQ.5 usability/a11y | **[WIP]** | matrix published 9 Oct 2026 (`docs/LIMITATIONS.md`); structural gate done; study + browser audit + interviews remain |
+| GQ.6 dependency isolation | **[WIP]** | decision G-034 recorded 9 Oct 2026; deployed measurements + sign-off outstanding |
+| GQ gate | open | needs dated go/no-go per item with owner, evidence path, ADR |
 
-Suite: 665 tests passing, 0 failing, 0 skipped across `internal/{environments,actions,provider,costmodel,postgres,intake,prstate,reconcile,plan,quota,admission,ttlwatch,resource,cleanup,janitor,foundation}`, `migrations`, `test/{fake,gate}`.
+Suite: 1963 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
 
-Not yet started: all of G2–G10, and every remaining G0 item. G1.1–G1.6 and the G1 gate are closed.
+No code-ownable work remains on the 1.0/1.5 path: every open row needs people (owners, interviews, studies, sign-offs), live sandboxes/providers, deployed fleets/clusters, the GQ.1 re-entry trigger, or a signed enterprise request (G9) / design-partner demand (G8.5, G10). G0–G3, GQ.3, G6.4, G6.6, G7.1/7.2/7.4–7.8, G8.1–8.4/8.6–8.9 and G9.4–9.8 are closed; G4/G5/G10 deferred by ADR G-027.
 
 ## GQ — Qualification spikes (blocking, precedes G0 commitment)
 
