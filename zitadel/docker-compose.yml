@@ -1,0 +1,86 @@
+# Local Zitadel for development (NOT production)
+#
+# What this is: a throwaway Zitadel v4 identity server plus its PostgreSQL,
+# for developing the Ghostlight identity integration (ADR G-038) on a
+# workstation. Console + API on http://localhost:8080.
+#
+# What this is not: a sandbox, a qualification environment, or anything
+# customer-facing. No credential lives in this file on purpose (see below);
+# the dev-only defaults live in zitadel/.env.dev, which is gitignored.
+# Production uses real secrets from a vault, TLS, and the commercial licence
+# if AGPL obligations trigger (see ADR G-038).
+#
+# Why one service with start-from-init: Zitadel's setup assumes EITHER the
+# documented happy path (admin creates user+database via start-from-init) OR
+# externally pre-provisioned user/database PLUS an explicit `zitadel init
+# zitadel` schema-bootstrap step before setup. Pre-provisioning the role in an
+# init script but skipping `init zitadel` lands in the gap between the two and
+# fails at migration 40_init_push_func_v4 querying eventstore.events before it
+# exists (upstream discussion zitadel/zitadel#9363). So: no init scripts, let
+# the postgres superuser do the provisioning, exactly as documented.
+#
+# Secrets (masterkey, DB passwords, admin password) live in zitadel/.env.dev,
+# which is gitignored (see .env.dev.example). They are intentionally NOT in
+# this file: a committed secret trips secret-scanning and, worse, teaches
+# that secrets in compose files are normal. Copy .env.dev.example to .env.dev
+# once; the values only take effect on first init (down -v to re-init).
+#
+# Usage (from the repo root):
+#   cp zitadel/.env.dev.example zitadel/.env.dev
+#   docker compose -f zitadel/docker-compose.yml up -d
+#   # first start runs init + migrations + creates the org/admin, then serves
+#   # console: http://localhost:8080  (admin / the password in .env.dev)
+#   # reset everything: docker compose -f zitadel/docker-compose.yml down -v
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # POSTGRES_USER/POSTGRES_PASSWORD come from .env.dev. Nothing secret is
+    # interpolated here: compose `environment:` entries override env_file, so
+    # a host-side empty expansion would silently blank a password.
+    env_file:
+      - .env.dev
+    volumes:
+      - zitadel-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.20.0
+    restart: unless-stopped
+    # init (create role+database via the postgres superuser) + setup
+    # (migrations, first org + human admin) + start, in one command.
+    command: >
+      start-from-init
+      --masterkeyFromEnv
+      --tlsMode disabled
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env.dev
+    environment:
+      # Masterkey, DB user/admin passwords and the first-admin password all
+      # come from .env.dev (see above why they are not interpolated here).
+      ZITADEL_DATABASE_POSTGRES_HOST: db
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_SSLMODE: disable
+      # Must equal POSTGRES_USER in .env.dev (the example uses postgres).
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSLMODE: disable
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_EXTERNALDOMAIN: localhost
+      ZITADEL_EXTERNALPORT: "8080"
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: Ghostlight
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: admin
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  zitadel-db-data:
