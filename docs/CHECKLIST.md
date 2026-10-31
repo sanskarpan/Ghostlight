@@ -73,7 +73,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G8.7 approvals | **[DONE]** | `internal/approvals` (29) |
 | G8.8 scheduling | **[DONE]** | `internal/scheduling` (17) |
 | G8.9 connectors | **[DONE]** | `internal/connector` (27) |
-| G8 gate | **[WIP]** | `test/gate` g8 team suite (9); comparison, invalidation re-proof, fleet envelope remain |
+| G8 gate | **[WIP]** | `test/gate` g8 team suite (9) + g8 invalidation re-proof (8); comparison (deferred with G8.5), fleet envelope remain |
 | G9.4 policy publish | **[DONE]** | `internal/policypublish` (21) |
 | G9.5 drift | **[DONE]** | `internal/drift` (29) |
 | G9.6 coverage | **[DONE]** | `internal/coverage` (26) |
@@ -89,7 +89,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | GQ.6 dependency isolation | **[WIP]** | decision G-034 recorded 9 Oct 2026; deployed measurements + sign-off outstanding |
 | GQ gate | open | needs dated go/no-go per item with owner, evidence path, ADR |
 
-Suite: 1963 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
+Suite: 2019 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
 
 No code-ownable work remains on the 1.0/1.5 path: every open row needs people (owners, interviews, studies, sign-offs), live sandboxes/providers, deployed fleets/clusters, the GQ.1 re-entry trigger, or a signed enterprise request (G9) / design-partner demand (G8.5, G10). G0–G3, GQ.3, G6.4, G6.6, G7.1/7.2/7.4–7.8, G8.1–8.4/8.6–8.9 and G9.4–9.8 are closed; G4/G5/G10 deferred by ADR G-027.
 
