@@ -23,6 +23,9 @@ services:
     region: singapore
     branch: main
     buildCommand: go build -o app ./cmd/server
+    # Migrations run explicitly before every start — never inside the server
+    # itself, which must not mutate schema on boot.
+    preDeployCommand: ./app -migrate
     startCommand: ./app
     healthCheckPath: /health/live
     envVars:
@@ -35,4 +38,6 @@ services:
       - key: DODO_BUSINESS_ID
         sync: false
       - key: DODO_PRODUCT_PLANS
+        sync: false
+      - key: DATABASE_URL
         sync: false

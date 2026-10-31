@@ -53,6 +53,7 @@
 package billing
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -97,7 +98,35 @@ var (
 	// ErrEmptyPolicy means the checkout policy names no allowed host. A
 	// policy that allows everywhere binds nothing.
 	ErrEmptyPolicy = errors.New("billing policy allows no host")
+	// ErrNotFound means no subscription record exists for the lookup. It is
+	// the store's answer, not a refusal: callers decide whether absence
+	// means "create it" (a start) or "refuse" (anything else).
+	ErrNotFound = errors.New("billing record not found")
 )
+
+// RecordStore is the persistence port behind billing intents. The domain
+// operations (Apply, OpenSubscription) stay pure; this interface is how a
+// transport keeps records and delivery IDs across restarts.
+//
+// Every read names the customer, so a store that forgets the filter leaks
+// across tenants at the query layer rather than relying on every caller to
+// remember. Mark is the apply-once memory: it records an event ID and
+// reports whether this call was the first to do so, so two racing
+// deliveries converge instead of double-applying. Implementations must make
+// Mark atomic — check-and-insert in one step — because check-then-insert is
+// the race this interface exists to prevent.
+type RecordStore interface {
+	// Get returns the subscription record, or ErrNotFound.
+	Get(ctx context.Context, customerID, subscriptionID string) (subscription.Subscription, error)
+	// Put creates or replaces the subscription record.
+	Put(ctx context.Context, sub subscription.Subscription) error
+	// Seen reports whether the event ID was recorded.
+	Seen(ctx context.Context, customerID, eventID string) (bool, error)
+	// Mark records the event ID and reports whether this call recorded it.
+	// A false return with a nil error means another delivery won the race:
+	// acknowledge without applying.
+	Mark(ctx context.Context, customerID, eventID, subscriptionID string) (bool, error)
+}
 
 // CheckoutPolicy bounds where money URLs may point.
 type CheckoutPolicy struct {

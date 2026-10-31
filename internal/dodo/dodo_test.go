@@ -284,7 +284,17 @@ func testReceiver() *Receiver {
 	if err != nil {
 		panic(err)
 	}
-	return NewReceiver(dodoSecret, "bus_1", plans)
+	rc, err := NewReceiver(dodoSecret, "bus_1", plans, NewMemoryStore())
+	if err != nil {
+		panic(err)
+	}
+	return rc
+}
+
+func TestNewReceiverRefusesNoStore(t *testing.T) {
+	if _, err := NewReceiver(dodoSecret, "bus_1", nil, nil); err == nil {
+		t.Error("nil store: expected a refusal, got a receiver that cannot deduplicate")
+	}
 }
 
 func TestReceiverAppliesAStartExactlyOnce(t *testing.T) {
@@ -293,7 +303,7 @@ func TestReceiverAppliesAStartExactlyOnce(t *testing.T) {
 	if code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("start: code=%d body=%v", code, out)
 	}
-	stored, ok := rc.Stored("sub_9")
+	stored, ok := rc.Stored("cus_9", "sub_9")
 	if !ok {
 		t.Fatal("record was not stored")
 	}
@@ -353,7 +363,7 @@ func TestReceiverRefusesBeforeCallingBilling(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Errorf("unknown subscription: code=%d, want 400", code)
 	}
-	if _, ok := rc.Stored("sub_x"); ok {
+	if _, ok := rc.Stored("cus_x", "sub_x"); ok {
 		t.Error("refused delivery created a record")
 	}
 	// Unmapped product start is refused.
@@ -373,7 +383,7 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	if code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("on_hold: code=%d body=%v", code, out)
 	}
-	stored, _ := rc.Stored("sub_1")
+	stored, _ := rc.Stored("cus_1", "sub_1")
 	if stored.PaymentFailedAt.IsZero() {
 		t.Error("failure left no outstanding failure")
 	}
@@ -382,7 +392,7 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	if code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("renewal after failure: code=%d body=%v", code, out)
 	}
-	restored, _ := rc.Stored("sub_1")
+	restored, _ := rc.Stored("cus_1", "sub_1")
 	if !restored.PaymentFailedAt.IsZero() {
 		t.Error("renewal did not clear the outstanding failure")
 	}
@@ -391,7 +401,7 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	if code != http.StatusOK || out["applied"] != false {
 		t.Fatalf("routine renewal: code=%d body=%v", code, out)
 	}
-	quiet, _ := rc.Stored("sub_1")
+	quiet, _ := rc.Stored("cus_1", "sub_1")
 	if !reflect.DeepEqual(restored, quiet) {
 		t.Error("routine renewal moved the record")
 	}
@@ -406,7 +416,7 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	if code, out := deliver(t, rc2, dodoSecret, "evt_r", "payment.succeeded", "bus_1", subData("sub_1", "cus_1", "prod_team"), dodoNow); code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("recovery: code=%d body=%v", code, out)
 	}
-	rec, _ := rc2.Stored("sub_1")
+	rec, _ := rc2.Stored("cus_1", "sub_1")
 	if !rec.PaymentFailedAt.IsZero() {
 		t.Error("recovery did not clear the failure")
 	}
@@ -415,14 +425,17 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Errorf("conflicting start: code=%d, want 400", code)
 	}
-	kept, _ := rc2.Stored("sub_1")
+	kept, _ := rc2.Stored("cus_1", "sub_1")
 	if string(kept.Plan.ID) != "team" {
 		t.Errorf("conflict moved the plan to %v", kept.Plan.ID)
 	}
 }
 
 func TestReceiverRequiresItsSecret(t *testing.T) {
-	rc := NewReceiver("", "bus_1", nil)
+	rc, err := NewReceiver("", "bus_1", nil, NewMemoryStore())
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/hooks/dodo", strings.NewReader(`{}`))
 	req.Header.Set("webhook-id", "x")
 	req.Header.Set("webhook-timestamp", "1")
