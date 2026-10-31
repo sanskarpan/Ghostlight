@@ -13,17 +13,21 @@ attached to it.
 
 | Duty | Owner | Team | What they own |
 |---|---|---|---|
-| `data-protection-officer` | *unassigned — required before any EU or UK customer* | — | the GDPR/UK GDPR data protection officer role, the transfer assessment, and the regulator relationship |
-| `security-incident` | *unassigned — required before any EU or UK customer* | — | incident detection, the notification decision, and the notification itself |
-| `privacy-rights` | *unassigned — required before any customer* | — | acknowledging, executing and answering rights requests, and the overdue report |
-| `subprocessor-management` | *unassigned — required before any customer* | — | the subprocessor list, the change process, and the notice given to customers |
-| `legal-review` | *unassigned — required before any customer* | — | the documents in [PRIVACY.md](PRIVACY.md), their versioning, and the acceptance record |
-| `on-call` | *unassigned — required before any customer* | — | escalation, and the handover when a named owner is unavailable |
+| `data-protection-officer` | Sanskar Pandey (interim — qualified DPO appointment still required before any EU or UK customer) | founding | the GDPR/UK GDPR data protection officer role, the transfer assessment, and the regulator relationship |
+| `security-incident` | Sanskar Pandey (interim) | founding | incident detection, the notification decision, and the notification itself |
+| `privacy-rights` | Sanskar Pandey (interim) | founding | acknowledging, executing and answering rights requests, and the overdue report |
+| `subprocessor-management` | Sanskar Pandey (interim) | founding | the subprocessor list, the change process, and the notice given to customers |
+| `legal-review` | Sanskar Pandey (interim — qualified legal review still required) | founding | the documents in [PRIVACY.md](PRIVACY.md), their versioning, and the acceptance record |
+| `on-call` | Sanskar Pandey (interim) | founding | escalation, and the handover when a named owner is unavailable |
 
-**Every owner is currently unassigned.** That is the honest state, and it is the
-single largest blocker on this row: the launch review refuses every organisation
-until each required duty has a name. A placeholder that says "platform" would make
-the review pass, and it would also make the review mean nothing.
+**Every duty currently names Sanskar Pandey as interim owner (assigned 31 October
+2026), so the launch review's ownership check passes.** This is explicitly
+interim, not qualified: the DPO appointment must still be made in writing, legal
+review by a qualified reviewer has still not happened, and the breach runbook has
+still not been walked. A placeholder that says "platform" would make the review
+pass while meaning nothing; a named interim owner means there is a specific human
+to page, replace, and hold accountable — and the remaining items in section 7 stay
+the launch blockers they are.
 
 ## 2. The launch review
 
