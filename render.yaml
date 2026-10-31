@@ -1,0 +1,32 @@
+# Render Blueprint for Ghostlight (ADR: this file is the IaC declaration;
+# dashboard/API changes are the actuator until the Blueprint is connected).
+#
+# Service: Ghostlight (web_service, go native runtime, free, singapore).
+# The name matches the existing dashboard service, so connecting this
+# Blueprint applies this configuration to that service.
+#
+# Why this exists (issue #182): the dashboard build ran `go build` at the
+# repo root, which holds no Go files, so every deploy failed in ~11s. The
+# fix has two halves and both are recorded here: build an explicit package
+# (`./cmd/server`, the platform API's HTTP entrypoint), and probe an
+# endpoint that exists (`/health/live` per shared/CONTRACTS.md §3).
+#
+# Secrets are NEVER in this file: GHOSTLIGHT_API_TOKENS and
+# GHOSTLIGHT_BUILD_SHA use `sync: false`, which prompts in the dashboard on
+# connect and preserves existing values on sync.
+
+services:
+  - type: web
+    runtime: go
+    name: Ghostlight
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: go build -o app ./cmd/server
+    startCommand: ./app
+    healthCheckPath: /health/live
+    envVars:
+      - key: GHOSTLIGHT_API_TOKENS
+        sync: false
+      - key: GHOSTLIGHT_BUILD_SHA
+        sync: false
