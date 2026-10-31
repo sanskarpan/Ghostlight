@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!zitadel/.env.dev.example
 *.pem
 *.key
 secrets/
