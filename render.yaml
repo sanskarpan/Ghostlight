@@ -30,3 +30,9 @@ services:
         sync: false
       - key: GHOSTLIGHT_BUILD_SHA
         sync: false
+      - key: DODO_WEBHOOK_SECRET
+        sync: false
+      - key: DODO_BUSINESS_ID
+        sync: false
+      - key: DODO_PRODUCT_PLANS
+        sync: false

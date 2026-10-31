@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
@@ -184,5 +189,137 @@ func TestReadyReportsNoSecrets(t *testing.T) {
 	raw, _ := json.Marshal(body)
 	if strings.Contains(string(raw), "tok") || strings.Contains(string(raw), "ada") {
 		t.Errorf("ready response leaks credential material: %v", body)
+	}
+}
+
+// dodoTestSecret is a fixed test signing key (base64 of 32 bytes).
+var dodoTestSecret = "whsec_" + base64.StdEncoding.EncodeToString([]byte("fedcba9876543210fedcba9876543210"))
+
+func dodoEnv() func(string) string {
+	return func(key string) string {
+		switch key {
+		case "GHOSTLIGHT_API_TOKENS":
+			return "op:tok-op-1|repo:acme|environment:read"
+		case "DODO_WEBHOOK_SECRET":
+			return dodoTestSecret
+		case "DODO_BUSINESS_ID":
+			return "bus_1"
+		case "DODO_PRODUCT_PLANS":
+			return "prod_team:team"
+		}
+		return ""
+	}
+}
+
+func signDodo(t *testing.T, secret, id, ts, body string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(secret, "whsec_"))
+	if err != nil {
+		t.Fatalf("bad test secret: %v", err)
+	}
+	mac := hmac.New(sha256.New, raw)
+	fmt.Fprintf(mac, "%s.%s.%s", id, ts, body)
+	return "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func postHook(t *testing.T, mux *http.ServeMux, secret, id, typ, business, data string) (int, map[string]any) {
+	t.Helper()
+	now := time.Now().UTC()
+	payload := fmt.Sprintf(`{"business_id":%q,"type":%q,"timestamp":%q,"data":%s}`,
+		business, typ, now.Add(-time.Minute).Format(time.RFC3339), data)
+	ts := fmt.Sprint(now.Unix())
+	req := httptest.NewRequest(http.MethodPost, "/hooks/dodo", strings.NewReader(payload))
+	req.Header.Set("webhook-id", id)
+	req.Header.Set("webhook-timestamp", ts)
+	req.Header.Set("webhook-signature", signDodo(t, secret, id, ts, payload))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("POST /hooks/dodo: response is not JSON: %v", err)
+	}
+	return rec.Code, out
+}
+
+func TestDodoRouteIsMountedAndVerified(t *testing.T) {
+	mux, err := buildMux(dodoEnv(), testBackend(nil))
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	// Unsigned: 401 proves the route exists and verifies (a missing route
+	// would be 404 from the API layer, since the token below is absent too).
+	req := httptest.NewRequest(http.MethodPost, "/hooks/dodo", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unsigned delivery: code=%d, want 401", rec.Code)
+	}
+	// Wrong method: 405, not silently reinterpreted.
+	getReq := httptest.NewRequest(http.MethodGet, "/hooks/dodo", nil)
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /hooks/dodo: code=%d, want 405", getRec.Code)
+	}
+	// Honest loop through the mounted route: start applies once.
+	code, out := postHook(t, mux, dodoTestSecret, "evt_live", "subscription.active", "bus_1",
+		`{"subscription_id":"sub_live","customer_id":"cus_live","product_id":"prod_team"}`)
+	if code != http.StatusOK || out["applied"] != true {
+		t.Fatalf("live delivery: code=%d body=%v", code, out)
+	}
+	code, out = postHook(t, mux, dodoTestSecret, "evt_live", "subscription.active", "bus_1",
+		`{"subscription_id":"sub_live","customer_id":"cus_live","product_id":"prod_team"}`)
+	if code != http.StatusOK || out["duplicate"] != true || out["applied"] != false {
+		t.Fatalf("redelivery: code=%d body=%v", code, out)
+	}
+	// Tampered body: 401.
+	now := time.Now().UTC()
+	payload := fmt.Sprintf(`{"business_id":"bus_1","type":"subscription.cancelled","timestamp":%q,"data":{"subscription_id":"sub_live","customer_id":"cus_live"}}`,
+		now.Add(-time.Minute).Format(time.RFC3339))
+	ts := fmt.Sprint(now.Unix())
+	req = httptest.NewRequest(http.MethodPost, "/hooks/dodo", strings.NewReader(payload+" "))
+	req.Header.Set("webhook-id", "evt_tamper")
+	req.Header.Set("webhook-timestamp", ts)
+	req.Header.Set("webhook-signature", signDodo(t, dodoTestSecret, "evt_tamper", ts, payload))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("tampered delivery: code=%d, want 401", rec.Code)
+	}
+}
+
+func TestDodoRouteUnconfiguredRefusesEveryDelivery(t *testing.T) {
+	mux, err := buildMux(func(string) string { return "" }, testBackend(nil))
+	if err != nil {
+		t.Fatalf("buildMux without secrets: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/hooks/dodo", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("unconfigured receiver: code=%d, want 500", rec.Code)
+	}
+}
+
+func TestDodoRouteBadProductMapRefusesStartup(t *testing.T) {
+	getenv := func(key string) string {
+		if key == "DODO_PRODUCT_PLANS" {
+			return "prod_x:platinum"
+		}
+		return ""
+	}
+	if _, err := buildMux(getenv, testBackend(nil)); err == nil {
+		t.Error("malformed product map: expected a refusal, got success")
+	}
+	if code := run(func(key string) string {
+		if key == "GHOSTLIGHT_API_TOKENS" {
+			return "op:tok|g|p"
+		}
+		if key == "DODO_PRODUCT_PLANS" {
+			return "prod_x:platinum"
+		}
+		return ""
+	}); code == 0 {
+		t.Error("run with a malformed product map: expected a refusal, got success")
 	}
 }
