@@ -45,7 +45,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G4.1–G4.6, G4 gate | deferred | post-revenue gate per ADR G-027; GQ.3 still measures the fixed-fleet floor |
 | G5.1–G5.6, G5 gate | deferred | post-revenue gate per ADR G-027; G-013 still forbids auto-merge and production mutation |
 | G6.1 fleet soak | open | needs fleet + measured create/update/cleanup + orphan inventory |
-| G6.2 DB restore | open | needs restore execution + beyond-cut reconciliation proof |
+| G6.2 DB restore | **[WIP]** | `test/gate` g6.2 restore suite (7): restore-to-cut + ordered ledger replay + janitor reconciliation over the real memory ledger — restore alone resurrects the deleted (hole established), ordered replay converges to the pre-restore ledger, tombstone wins over re-record, denylist survives, beyond-cut orphan quarantines and is never deleted, replayed world reconciles except the orphan, stale-generation replay refused; real managed restore execution remains |
 | G6.3 upgrade exercise | open | needs old module/state/runner versions against the platform |
 | G6.4 operator/incident readiness | **[DONE]** | `internal/{oncall,communications,operator}` (63+66+36) + `cmd/operator` + `docs/OPERATOR-RUNBOOKS.md`; closed via #169/#170/#171 |
 | G6.5 teardown report | open | needs measured provisioning/scaling/recovery/cost data |
@@ -89,7 +89,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | GQ.6 dependency isolation | **[WIP]** | decision G-034 recorded 9 Oct 2026; deployed measurements + sign-off outstanding |
 | GQ gate | open | needs dated go/no-go per item with owner, evidence path, ADR |
 
-Suite: 2019 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
+Suite: 2026 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
 
 No code-ownable work remains on the 1.0/1.5 path: every open row needs people (owners, interviews, studies, sign-offs), live sandboxes/providers, deployed fleets/clusters, the GQ.1 re-entry trigger, or a signed enterprise request (G9) / design-partner demand (G8.5, G10). G0–G3, GQ.3, G6.4, G6.6, G7.1/7.2/7.4–7.8, G8.1–8.4/8.6–8.9 and G9.4–9.8 are closed; G4/G5/G10 deferred by ADR G-027.
 
