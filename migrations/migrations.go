@@ -67,6 +67,51 @@ func applyOne(db *sql.DB, name, body string) error {
 	return nil
 }
 
+// ApplyPending runs every migration not yet recorded as applied, in filename
+// order, and records each one. It is idempotent: running it against a
+// database it already migrated is a no-op that reports nothing to do.
+//
+// Apply runs every file unconditionally and is what fresh databases
+// (notably the test suites) use. ApplyPending is what long-lived databases
+// use — for example the deploy pre-step — where re-running 0001 would fail
+// on tables that already exist. The tracking table is created by the same
+// call that reads it, inside its own transaction, so the very first run
+// bootstraps itself.
+func ApplyPending(db *sql.DB) ([]string, error) {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		name text PRIMARY KEY,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		return nil, fmt.Errorf("tracking table: %w", err)
+	}
+	names, err := filenames()
+	if err != nil {
+		return nil, err
+	}
+	var applied []string
+	for _, name := range names {
+		var exists bool
+		if err := db.QueryRow(`SELECT true FROM schema_migrations WHERE name = $1`, name).Scan(&exists); err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("check %s: %w", name, err)
+		}
+		if exists {
+			continue
+		}
+		body, err := schemaFS.ReadFile(name)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := applyOne(db, name, string(body)); err != nil {
+			return nil, err
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations (name) VALUES ($1)`, name); err != nil {
+			return nil, fmt.Errorf("record %s: %w", name, err)
+		}
+		applied = append(applied, name)
+	}
+	return applied, nil
+}
+
 // Embedded exposes the raw migration bodies, for review tooling that needs to
 // assert on the schema text itself.
 func Embedded() ([]string, error) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/dodo"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
 )
@@ -96,12 +97,16 @@ func get(t *testing.T, mux *http.ServeMux, path, token string) (int, map[string]
 func TestHealthEndpointsAreOpenAndHonest(t *testing.T) {
 	mux := newMux("test-sha", testBackend(map[string]contract.Principal{
 		"t1": {ID: "ada"},
-	}))
+	}), "memory")
 	if code, body := get(t, mux, "/health/live", ""); code != http.StatusOK || body["status"] != "live" {
 		t.Errorf("live: code=%d body=%v", code, body)
 	}
 	if code, body := get(t, mux, "/health/ready", ""); code != http.StatusOK || body["status"] != "ready" {
 		t.Errorf("ready: code=%d body=%v", code, body)
+	}
+	_, readyBody := get(t, mux, "/health/ready", "")
+	if backing, _ := readyBody["backing"].(map[string]any); backing["billing_store"] != "memory" {
+		t.Errorf("ready hides the billing backend: %v", readyBody)
 	}
 	if code, body := get(t, mux, "/health/startup", ""); code != http.StatusOK || body["status"] != "started" {
 		t.Errorf("startup: code=%d body=%v", code, body)
@@ -121,7 +126,7 @@ func TestHealthEndpointsAreOpenAndHonest(t *testing.T) {
 func TestAPIRoutesStayAuthenticated(t *testing.T) {
 	mux := newMux("test-sha", testBackend(map[string]contract.Principal{
 		"t1": {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read"}},
-	}))
+	}), "memory")
 	// No token: 401, full stop.
 	if code, _ := get(t, mux, "/v1/environments/env-1", ""); code != http.StatusUnauthorized {
 		t.Errorf("no token: code=%d, want 401", code)
@@ -184,7 +189,7 @@ func TestBuildSHAOrder(t *testing.T) {
 }
 
 func TestReadyReportsNoSecrets(t *testing.T) {
-	mux := newMux("s", testBackend(nil))
+	mux := newMux("s", testBackend(nil), "memory")
 	_, body := get(t, mux, "/health/ready", "")
 	raw, _ := json.Marshal(body)
 	if strings.Contains(string(raw), "tok") || strings.Contains(string(raw), "ada") {
@@ -242,7 +247,7 @@ func postHook(t *testing.T, mux *http.ServeMux, secret, id, typ, business, data 
 }
 
 func TestDodoRouteIsMountedAndVerified(t *testing.T) {
-	mux, err := buildMux(dodoEnv(), testBackend(nil))
+	mux, err := buildMux(dodoEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -289,7 +294,7 @@ func TestDodoRouteIsMountedAndVerified(t *testing.T) {
 }
 
 func TestDodoRouteUnconfiguredRefusesEveryDelivery(t *testing.T) {
-	mux, err := buildMux(func(string) string { return "" }, testBackend(nil))
+	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory")
 	if err != nil {
 		t.Fatalf("buildMux without secrets: %v", err)
 	}
@@ -308,7 +313,7 @@ func TestDodoRouteBadProductMapRefusesStartup(t *testing.T) {
 		}
 		return ""
 	}
-	if _, err := buildMux(getenv, testBackend(nil)); err == nil {
+	if _, err := buildMux(getenv, testBackend(nil), dodo.NewMemoryStore(), "memory"); err == nil {
 		t.Error("malformed product map: expected a refusal, got success")
 	}
 	if code := run(func(key string) string {
@@ -321,5 +326,65 @@ func TestDodoRouteBadProductMapRefusesStartup(t *testing.T) {
 		return ""
 	}); code == 0 {
 		t.Error("run with a malformed product map: expected a refusal, got success")
+	}
+}
+
+func TestMigrateRefusesWithoutADatabase(t *testing.T) {
+	if code := run(func(key string) string {
+		if key == "MIGRATE" {
+			return "1"
+		}
+		return ""
+	}); code == 0 {
+		t.Error("migrate without DATABASE_URL: expected a refusal, got success")
+	}
+}
+
+func TestMigrateRefusesAnUnreachableDatabase(t *testing.T) {
+	getenv := func(key string) string {
+		switch key {
+		case "MIGRATE":
+			return "1"
+		case "DATABASE_URL":
+			return "postgres://ghostlight:ghostlight@127.0.0.1:1/ghostlight?sslmode=disable"
+		}
+		return ""
+	}
+	if code := run(getenv); code == 0 {
+		t.Error("migrate against a refused port: expected a refusal, got success")
+	}
+}
+
+func TestOpenBillingStoreMemoryWhenUnconfigured(t *testing.T) {
+	store, name, err := openBillingStore(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("openBillingStore: %v", err)
+	}
+	if name != "memory" {
+		t.Errorf("store name = %q, want memory", name)
+	}
+	if store == nil {
+		t.Fatal("expected a working in-memory store, got nil")
+	}
+}
+
+func TestOpenBillingStoreRefusesAnUnreachableDatabase(t *testing.T) {
+	getenv := func(key string) string {
+		if key == "DATABASE_URL" {
+			return "postgres://ghostlight:ghostlight@127.0.0.1:1/ghostlight?sslmode=disable"
+		}
+		return ""
+	}
+	if _, _, err := openBillingStore(getenv); err == nil {
+		t.Error("unreachable database: expected a refusal, got a store that would silently forget")
+	}
+}
+
+func TestReadyNamesTheBillingBackend(t *testing.T) {
+	mux := newMux("s", testBackend(nil), "postgres")
+	_, body := get(t, mux, "/health/ready", "")
+	backing, _ := body["backing"].(map[string]any)
+	if backing["billing_store"] != "postgres" {
+		t.Errorf("ready backing = %v, want the postgres backend named", body["backing"])
 	}
 }

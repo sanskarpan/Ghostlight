@@ -56,6 +56,7 @@
 package dodo
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -462,45 +463,101 @@ func ParseProductPlans(spec string) (map[string]entitlements.PlanID, error) {
 	return out, nil
 }
 
+// memoryStore is the in-memory RecordStore: the receiver's original home
+// and the no-database fallback. Everything it holds is forgotten on
+// restart, which callers must report honestly rather than hide.
+type memoryStore struct {
+	mu   sync.Mutex
+	subs map[string]subscription.Subscription
+	seen map[string]string
+}
+
+// NewMemoryStore returns an empty in-memory record store.
+func NewMemoryStore() billing.RecordStore {
+	return &memoryStore{subs: make(map[string]subscription.Subscription), seen: make(map[string]string)}
+}
+
+func (m *memoryStore) Get(_ context.Context, customerID, subscriptionID string) (subscription.Subscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sub := range m.subs {
+		if sub.ID == subscriptionID && sub.CustomerID == customerID {
+			return sub, nil
+		}
+	}
+	return subscription.Subscription{}, billing.ErrNotFound
+}
+
+func (m *memoryStore) Put(_ context.Context, sub subscription.Subscription) error {
+	if strings.TrimSpace(sub.ID) == "" || strings.TrimSpace(sub.CustomerID) == "" {
+		return fmt.Errorf("%w: subscription record names no id or no customer", subscription.ErrInvalidFact)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subs[sub.ID] = sub
+	return nil
+}
+
+func (m *memoryStore) Seen(_ context.Context, _ string, eventID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.seen[eventID]
+	return ok, nil
+}
+
+func (m *memoryStore) Mark(_ context.Context, _, eventID, subscriptionID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.seen[eventID]; ok {
+		return false, nil
+	}
+	m.seen[eventID] = subscriptionID
+	return true, nil
+}
+
 // Receiver is the Dodo webhook endpoint: it verifies, classifies,
-// deduplicates and applies deliveries to the subscription records it holds.
-// The stores are in-memory and owned by the transport; a restart forgets
-// them, which is acceptable for test-mode development and is stated rather
-// than hidden. Production needs the durable store, which does not exist yet.
+// deduplicates and applies deliveries to the subscription records in its
+// store. The store is owned by the transport: an in-memory store forgets
+// everything on restart (documented, for development), while a durable
+// store remembers records and delivery IDs across restarts — which is what
+// makes a redelivery after a crash a duplicate instead of a second
+// application.
 type Receiver struct {
 	secret     string
 	businessID string
 	plans      map[string]entitlements.PlanID
-
-	mu   sync.Mutex
-	seen map[string]struct{}
-	subs map[string]*subscription.Subscription
+	store      billing.RecordStore
 }
 
 // NewReceiver returns a receiver that verifies with secret, optionally
-// scopes to businessID (empty skips the check), and resolves start plans
+// scopes to businessID (empty skips the check), resolves start plans
 // through plans (nil maps nothing; unmapped products are refused
-// per delivery, not at construction).
-func NewReceiver(secret, businessID string, plans map[string]entitlements.PlanID) *Receiver {
+// per delivery, not at construction), and persists through store. A nil
+// store is refused: a receiver that cannot remember cannot deduplicate,
+// and one that cannot deduplicate will eventually apply twice.
+func NewReceiver(secret, businessID string, plans map[string]entitlements.PlanID, store billing.RecordStore) (*Receiver, error) {
+	if store == nil {
+		return nil, errors.New("dodo receiver requires a record store: without one every restart is an amnesia event")
+	}
+	if plans == nil {
+		plans = make(map[string]entitlements.PlanID)
+	}
 	return &Receiver{
 		secret:     secret,
 		businessID: businessID,
 		plans:      plans,
-		seen:       make(map[string]struct{}),
-		subs:       make(map[string]*subscription.Subscription),
-	}
+		store:      store,
+	}, nil
 }
 
 // Stored reports the record held for a Dodo subscription ID. It exists for
 // tests and operators; the route never exposes records.
-func (rc *Receiver) Stored(id string) (subscription.Subscription, bool) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	sub, ok := rc.subs[id]
-	if !ok || sub == nil {
+func (rc *Receiver) Stored(customerID, id string) (subscription.Subscription, bool) {
+	sub, err := rc.store.Get(context.Background(), customerID, id)
+	if err != nil {
 		return subscription.Subscription{}, false
 	}
-	return *sub, true
+	return sub, true
 }
 
 // writeJSON writes a response. Bodies are fixed-shape and carry no secrets.
@@ -541,28 +598,45 @@ func (rc *Receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "refused"})
 		return
 	}
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	if _, ok := rc.seen[intent.Billing.EventID]; ok {
+	ctx := r.Context()
+	seen, err := rc.store.Seen(ctx, intent.Billing.CustomerID, intent.Billing.EventID)
+	if err != nil {
+		// The duplicate memory could not be read. Applying blindly risks a
+		// second application, and refusing outright loses nothing: Dodo
+		// retries, and a healthy store answers correctly on the retry.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "unavailable"})
+		return
+	}
+	if seen {
 		writeJSON(w, http.StatusOK, map[string]any{"received": true, "applied": false, "duplicate": true})
 		return
 	}
-	applied, code := rc.applyLocked(intent)
+	applied, code := rc.apply(ctx, intent)
 	if code != http.StatusOK {
 		writeJSON(w, code, map[string]any{"status": "refused"})
 		return
 	}
-	rc.seen[intent.Billing.EventID] = struct{}{}
+	if _, err := rc.store.Mark(ctx, intent.Billing.CustomerID, intent.Billing.EventID, intent.Billing.SubscriptionID); err != nil {
+		// Applied but unrecorded: uncertain, not failed. The retry will
+		// re-apply, and every application path is idempotent per event —
+		// so this 500 converges rather than corrupting.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "unavailable"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"received": true, "applied": applied, "duplicate": false})
 }
 
-// applyLocked moves one deduplicated intent into the records. Callers hold
-// rc.mu. A started subscription with no record is opened and bound to the
-// provider's ID; any other intent for an unknown record is refused rather
-// than manufacturing state.
-func (rc *Receiver) applyLocked(intent Intent) (bool, int) {
-	sub, ok := rc.subs[intent.Billing.SubscriptionID]
-	if !ok || sub == nil {
+// apply moves one deduplicated intent into the records. A started
+// subscription with no record is opened and bound to the provider's ID; any
+// other intent for an unknown record is refused rather than manufacturing
+// state. Mutations are written back to the store: an Apply that is not
+// persisted is an Apply that never happened.
+func (rc *Receiver) apply(ctx context.Context, intent Intent) (bool, int) {
+	sub, err := rc.store.Get(ctx, intent.Billing.CustomerID, intent.Billing.SubscriptionID)
+	if err != nil {
+		if !errors.Is(err, billing.ErrNotFound) {
+			return false, http.StatusInternalServerError
+		}
 		if intent.Billing.Kind != providerinbox.BillingSubscriptionStarted {
 			return false, http.StatusBadRequest
 		}
@@ -578,7 +652,9 @@ func (rc *Receiver) applyLocked(intent Intent) (bool, int) {
 		if err != nil {
 			return false, http.StatusBadRequest
 		}
-		rc.subs[intent.Billing.SubscriptionID] = &opened
+		if err := rc.store.Put(ctx, opened); err != nil {
+			return false, http.StatusInternalServerError
+		}
 		return true, http.StatusOK
 	}
 	var plan entitlements.Plan
@@ -593,9 +669,14 @@ func (rc *Receiver) applyLocked(intent Intent) (bool, int) {
 			return false, http.StatusBadRequest
 		}
 	}
-	applied, err := billing.Apply(sub, intent.Billing, plan)
+	applied, err := billing.Apply(&sub, intent.Billing, plan)
 	if err != nil {
 		return false, http.StatusBadRequest
+	}
+	if applied {
+		if err := rc.store.Put(ctx, sub); err != nil {
+			return false, http.StatusInternalServerError
+		}
 	}
 	return applied, http.StatusOK
 }

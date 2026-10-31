@@ -55,12 +55,17 @@ func g73dTeam(t *testing.T) entitlements.Plan {
 	return plan
 }
 
-func g73dReceiver() *dodo.Receiver {
+func g73dReceiver(t *testing.T) *dodo.Receiver {
+	t.Helper()
 	plans, err := dodo.ParseProductPlans("prod_team:team,prod_growth:growth")
 	if err != nil {
-		panic(err)
+		t.Fatalf("ParseProductPlans: %v", err)
 	}
-	return dodo.NewReceiver(g73dSecret, "bus_gate", plans)
+	rc, err := dodo.NewReceiver(g73dSecret, "bus_gate", plans, dodo.NewMemoryStore())
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	return rc
 }
 
 // g73dDeliver signs a Dodo envelope and returns it through the real
@@ -96,12 +101,12 @@ func g73dSubData(sub, customer, product string) string {
 }
 
 func TestG73GateDodoHonestLoopConvertsTheTrial(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, out := g73dDeliver(t, rc, g73dSecret, "evt_loop", "subscription.active", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("start: code=%d body=%v", code, out)
 	}
-	stored, ok := rc.Stored("sub_1")
+	stored, ok := rc.Stored("cus_1", "sub_1")
 	if !ok {
 		t.Fatal("no subscription record was stored")
 	}
@@ -115,21 +120,21 @@ func TestG73GateDodoHonestLoopConvertsTheTrial(t *testing.T) {
 	if code, _ := g73dDeliver(t, rc, g73dSecret, "evt_f", "subscription.on_hold", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow); code != http.StatusOK {
 		t.Fatalf("on_hold: code=%d", code)
 	}
-	failed, _ := rc.Stored("sub_1")
+	failed, _ := rc.Stored("cus_1", "sub_1")
 	if failed.PaymentFailedAt.IsZero() {
 		t.Fatal("on_hold left no outstanding failure")
 	}
 	if code, out := g73dDeliver(t, rc, g73dSecret, "evt_r", "subscription.renewed", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow); code != http.StatusOK || out["applied"] != true {
 		t.Fatalf("renewed: code=%d body=%v", code, out)
 	}
-	restored, _ := rc.Stored("sub_1")
+	restored, _ := rc.Stored("cus_1", "sub_1")
 	if !restored.PaymentFailedAt.IsZero() {
 		t.Error("renewal did not clear the failure")
 	}
 }
 
 func TestG73GateDodoForgeryNeverReachesARecord(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	body := `{"business_id":"bus_gate","type":"subscription.cancelled","timestamp":"2026-11-02T11:59:00Z","data":{"subscription_id":"sub_1","customer_id":"cus_1"}}`
 	mac := hmac.New(sha256.New, []byte("wrong-key-0123456789abcdef"))
 	fmt.Fprintf(mac, "%s.%s.%s", "evt_forge", "1762085940", body)
@@ -142,35 +147,35 @@ func TestG73GateDodoForgeryNeverReachesARecord(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("forgery verified: code=%d", rec.Code)
 	}
-	if _, ok := rc.Stored("sub_1"); ok {
+	if _, ok := rc.Stored("cus_1", "sub_1"); ok {
 		t.Error("forgery created a record")
 	}
 }
 
 func TestG73GateDodoUnknownEventStopsAtClassification(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, _ := g73dDeliver(t, rc, g73dSecret, "evt_new", "dispute.opened", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusBadRequest {
 		t.Fatalf("unknown type: code=%d, want refusal not silence", code)
 	}
-	if _, ok := rc.Stored("sub_1"); ok {
+	if _, ok := rc.Stored("cus_1", "sub_1"); ok {
 		t.Error("unknown event created a record")
 	}
 }
 
 func TestG73GateDodoAnotherBusinessIsRefused(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, _ := g73dDeliver(t, rc, g73dSecret, "evt_cross", "subscription.active", "bus_other", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusBadRequest {
 		t.Fatalf("other business: code=%d", code)
 	}
-	if _, ok := rc.Stored("sub_1"); ok {
+	if _, ok := rc.Stored("cus_1", "sub_1"); ok {
 		t.Error("other-business intent created a record")
 	}
 }
 
 func TestG73GateDodoRedeliveryAppliesOnce(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	applications := 0
 	for i := 0; i < 3; i++ {
 		code, out := g73dDeliver(t, rc, g73dSecret, "evt_once", "subscription.active", "bus_gate", g73dSubData("sub_9", "cus_9", "prod_team"), g73dNow)
@@ -187,26 +192,26 @@ func TestG73GateDodoRedeliveryAppliesOnce(t *testing.T) {
 }
 
 func TestG73GateDodoRenewalStormChangesNothing(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, _ := g73dDeliver(t, rc, g73dSecret, "evt_s", "subscription.active", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusOK {
 		t.Fatalf("start: code=%d", code)
 	}
-	before, _ := rc.Stored("sub_1")
+	before, _ := rc.Stored("cus_1", "sub_1")
 	for i := 0; i < 12; i++ {
 		code, out := g73dDeliver(t, rc, g73dSecret, fmt.Sprintf("evt_renew_%d", i), "subscription.renewed", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 		if code != http.StatusOK || out["applied"] != false {
 			t.Fatalf("renewal %d: code=%d body=%v", i, code, out)
 		}
 	}
-	after, _ := rc.Stored("sub_1")
+	after, _ := rc.Stored("cus_1", "sub_1")
 	if before.PaymentFailedAt != after.PaymentFailedAt || string(before.Plan.ID) != string(after.Plan.ID) {
 		t.Error("twelve routine renewals moved the record")
 	}
 }
 
 func TestG73GateDodoConflictingStartIsRefused(t *testing.T) {
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, _ := g73dDeliver(t, rc, g73dSecret, "evt_s", "subscription.active", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusOK {
 		t.Fatalf("start: code=%d", code)
@@ -216,7 +221,7 @@ func TestG73GateDodoConflictingStartIsRefused(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("conflicting start: code=%d, want refusal", code)
 	}
-	kept, _ := rc.Stored("sub_1")
+	kept, _ := rc.Stored("cus_1", "sub_1")
 	if string(kept.Plan.ID) != "team" {
 		t.Errorf("conflict moved the plan to %v", kept.Plan.ID)
 	}
@@ -226,12 +231,12 @@ func TestG73GateDodoIntentAppliesToItsOwnRecord(t *testing.T) {
 	// Cross-wiring the classifier output straight into billing.Apply proves
 	// the intent shape the receiver produces is the shape billing consumes —
 	// the seam the gate exists to cover.
-	rc := g73dReceiver()
+	rc := g73dReceiver(t)
 	code, _ := g73dDeliver(t, rc, g73dSecret, "evt_s", "subscription.active", "bus_gate", g73dSubData("sub_1", "cus_1", "prod_team"), g73dNow)
 	if code != http.StatusOK {
 		t.Fatalf("start: code=%d", code)
 	}
-	sub, ok := rc.Stored("sub_1")
+	sub, ok := rc.Stored("cus_1", "sub_1")
 	if !ok {
 		t.Fatal("no record")
 	}
