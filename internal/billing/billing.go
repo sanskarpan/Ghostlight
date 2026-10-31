@@ -347,6 +347,14 @@ func Apply(sub *subscription.Subscription, intent providerinbox.BillingIntent, p
 			return false, fmt.Errorf("%w: record holds %s, intent carries %s",
 				ErrPlanConflict, sub.Plan.ID, approved.ID)
 		}
+		// A record opened paid-direct carries its plan from creation, not
+		// from a recorded conversion — so a start naming a different plan
+		// is a conflict even with no conversion on record. Only a trial
+		// record may convert into whatever the intent carries.
+		if sub.Plan.ID != "" && sub.Plan.TrialDays == 0 && !reflect.DeepEqual(sub.Plan, approved) {
+			return false, fmt.Errorf("%w: record holds %s, intent carries %s",
+				ErrPlanConflict, sub.Plan.ID, approved.ID)
+		}
 		if err := sub.RecordConversion(at, approved); err != nil {
 			return false, err
 		}

@@ -50,6 +50,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/dodo"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
 )
@@ -175,6 +176,43 @@ func newMux(build string, backend *api.Server) *http.ServeMux {
 	return mux
 }
 
+// dodoReceiver builds the Dodo webhook receiver from the environment.
+// DODO_PRODUCT_PLANS maps Dodo product IDs to approved plan IDs as
+// "prod_abc:team,prod_def:growth"; malformed means the server refuses to
+// start, because a mapping nobody can read strictly cannot be audited.
+// A missing DODO_WEBHOOK_SECRET is not a startup refusal — the route stays
+// mounted and refuses every delivery with 500, so billing misconfiguration
+// can never take down the API. DODO_BUSINESS_ID empty disables the
+// cross-business check.
+func dodoReceiver(getenv func(string) string) (*dodo.Receiver, error) {
+	plans, err := dodo.ParseProductPlans(getenv("DODO_PRODUCT_PLANS"))
+	if err != nil {
+		return nil, err
+	}
+	return dodo.NewReceiver(
+		getenv("DODO_WEBHOOK_SECRET"),
+		strings.TrimSpace(getenv("DODO_BUSINESS_ID")),
+		plans,
+	), nil
+}
+
+// buildMux wires the open contract endpoints, the authenticated platform
+// API, and the Dodo webhook receiver into one handler.
+func buildMux(getenv func(string) string, backend *api.Server) (*http.ServeMux, error) {
+	rc, err := dodoReceiver(getenv)
+	if err != nil {
+		return nil, err
+	}
+	mux := newMux(buildSHA(getenv), backend)
+	mux.Handle("/hooks/dodo", rc)
+	if strings.TrimSpace(getenv("DODO_WEBHOOK_SECRET")) == "" {
+		log.Printf("dodo webhook receiver mounted but unconfigured (DODO_WEBHOOK_SECRET unset): deliveries will be refused")
+	} else {
+		log.Printf("dodo webhook receiver mounted at /hooks/dodo")
+	}
+	return mux, nil
+}
+
 // buildSHA reports the build this binary came from: Render's injected commit
 // first, an explicit override second, and an honest "unknown" otherwise.
 func buildSHA(getenv func(string) string) string {
@@ -213,9 +251,14 @@ func run(getenv func(string) string) int {
 		Room:         &reviewer.Room{},
 		Passports:    &passport.Registry{},
 	}
+	mux, err := buildMux(getenv, backend)
+	if err != nil {
+		log.Printf("refusing to start: %v", err)
+		return 1
+	}
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newMux(buildSHA(getenv), backend),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("serving %s on :%s", serviceName, port)
