@@ -19,6 +19,18 @@
 # exists (upstream discussion zitadel/zitadel#9363). So: no init scripts, let
 # the postgres superuser do the provisioning, exactly as documented.
 #
+# Why Traefik plus a separate login container: in Zitadel v4 the login UI is
+# NOT part of the core image. The core redirects every sign-in to
+# /ui/v2/login, which nothing serves without the `zitadel-login` container —
+# interactive login 404s (grpc_gateway, "Not Found") on a core-only deploy.
+# This compose mirrors the documented topology: Traefik terminates on
+# localhost:8080 and routes /ui/v2/login to the login container, everything
+# else to the core. The login container authenticates to the API with a PAT
+# the setup job writes to the shared bootstrap volume on first init
+# (ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH), so no console click-through is
+# needed to bring login up. Rebuilding the login client later (console or
+# API) needs its own PAT; see README.
+#
 # Secrets (masterkey, DB passwords, admin password) live in zitadel/.env.dev,
 # which is gitignored (see .env.dev.example). They are intentionally NOT in
 # this file: a committed secret trips secret-scanning and, worse, teaches
@@ -28,9 +40,18 @@
 # Usage (from the repo root):
 #   cp zitadel/.env.dev.example zitadel/.env.dev
 #   docker compose -f zitadel/docker-compose.yml up -d
-#   # first start runs init + migrations + creates the org/admin, then serves
+#   # first start runs init + migrations + creates the org/admin/login-client,
+#   # then serves; the setup writes the login UI's PAT to the shared bootstrap
+#   # volume, so login works with no console click-through
 #   # console: http://localhost:8080  (admin / the password in .env.dev)
+#   # login UI health: http://localhost:8080/ui/v2/login/healthy (via Traefik)
 #   # reset everything: docker compose -f zitadel/docker-compose.yml down -v
+#
+# Services: db (postgres), zitadel (core API, start-from-init), login
+# (zitadel-login UI under /ui/v2/login on the same origin), traefik
+# (reverse proxy splitting /ui/v2/login to login, rest to core).
+# In Zitadel v4 the login UI is a separate container; a core-only deploy
+# serves the API but 404s every interactive login (grpc_gateway Not Found).
 
 services:
   db:
@@ -52,14 +73,22 @@ services:
   zitadel:
     image: ghcr.io/zitadel/zitadel:v4.20.0
     restart: unless-stopped
+    # Root, as the official compose does: the setup job must write the login
+    # client's PAT to the shared bootstrap volume, and the named volume is
+    # root-owned on creation. Without this, setup fails with
+    # "open /zitadel/bootstrap/login-client.pat: permission denied", leaves
+    # partial instance state behind, and every restart then fails on the
+    # half-written 03_default_instance migration (duplicate instance_domain).
+    user: "0"
     # init (create role+database via the postgres superuser) + setup
-    # (migrations, first org + human admin) + start, in one command.
+    # (migrations, first org + human admin + login-client machine user) +
+    # start, in one command.
     command: >
       start-from-init
       --masterkeyFromEnv
       --tlsMode disabled
-    ports:
-      - "127.0.0.1:8080:8080"
+    expose:
+      - "8080"
     env_file:
       - .env.dev
     environment:
@@ -78,9 +107,60 @@ services:
       ZITADEL_EXTERNALPORT: "8080"
       ZITADEL_FIRSTINSTANCE_ORG_NAME: Ghostlight
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: admin
+      # Login-client machine user + PAT for the login container, written to
+      # the shared bootstrap volume on first init. Applies on first init
+      # only; rotating it later is a console/API task.
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Automatically Initialized IAM_LOGIN_CLIENT
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: "2029-11-01T00:00:00Z"
+      # Point every sign-in at the login container under the same origin.
+      # The OIDC/SAML defaults are set alongside the feature flag because
+      # the base-URI setting alone does not move them (upstream #10405).
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://localhost:8080/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://localhost:8080/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: http://localhost:8080/ui/v2/login/logout?post_logout_redirect=
+      ZITADEL_SAML_DEFAULTLOGINURLV2: http://localhost:8080/ui/v2/login/login?samlRequest=
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap
     depends_on:
       db:
         condition: service_healthy
 
+  # Reverse proxy: single origin on localhost:8080, login UI split-routed.
+  # Uses a static file provider (traefik.yml + traefik-routes.yml): the
+  # topology never changes, and the Docker provider depends on daemon socket
+  # access that is unreliable from a Windows-hosted daemon.
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    command:
+      - --configfile=/etc/traefik/traefik.yml
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik-routes.yml:/etc/traefik/routes.yml:ro
+
+  # Login UI (Next.js). Served under /ui/v2/login on the same origin via
+  # Traefik; talks to the core over the compose network. The session-cookie
+  # secret comes from .env.dev and must be at least 32 characters.
+  login:
+    image: ghcr.io/zitadel/zitadel-login:v4.20.0
+    restart: unless-stopped
+    environment:
+      ZITADEL_API_URL: http://zitadel:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+    env_file:
+      - .env.dev
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+    depends_on:
+      zitadel:
+        condition: service_started
+
 volumes:
   zitadel-db-data:
+  zitadel-bootstrap:
