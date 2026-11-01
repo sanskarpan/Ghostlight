@@ -28,7 +28,10 @@
 // customer**. A delivery that cannot name both is a fact about nothing and
 // is refused rather than guessed at. The customer is read from
 // `data.customer_id`, `data.customer.customer_id` or `data.customer.id`, in
-// that order — the first present wins — because the payload shape varies by
+// that order — the first present wins — and the subscription from
+// `data.subscription_id`, or from a credit-ledger `data.reference_id` whose
+// `data.reference_type` is `subscription`, because the payload shape varies
+// by event family and guessing across families is how one customer's payment
 // event family and guessing across families is how one customer's payment
 // moves another customer's subscription.
 //
@@ -313,7 +316,10 @@ type Intent struct {
 // failed creation names no subscription that exists, so there is nothing to
 // record a failure against, and a 400 on it would retry eight times to no
 // effect. payment.processing and payment.cancelled are likewise observed:
-// money in flight or withdrawn is not money overdue.
+// money in flight or withdrawn is not money overdue. The nine credit.*
+// ledger events are observed for the same reason: they move a virtual
+// balance the platform does not bill from, and none of them changes what a
+// subscription owes.
 func kindOf(typ string) (providerinbox.BillingKind, error) {
 	switch typ {
 	case "payment.succeeded":
@@ -333,6 +339,10 @@ func kindOf(typ string) (providerinbox.BillingKind, error) {
 		return providerinbox.BillingSubscriptionUpdated, nil
 	case "subscription.cancelled", "subscription.expired":
 		return providerinbox.BillingSubscriptionCancelled, nil
+	case "credit.added", "credit.deducted", "credit.expired", "credit.rolled_over",
+		"credit.rollover_forfeited", "credit.overage_charged", "credit.overage_reset",
+		"credit.manual_adjustment", "credit.balance_low":
+		return providerinbox.BillingSubscriptionUpdated, nil
 	default:
 		return "", ErrUnknownEvent
 	}
@@ -352,7 +362,7 @@ func Classify(event Event, businessID string) (Intent, error) {
 	if err != nil {
 		return Intent{}, err
 	}
-	subscriptionID := dodoString(event.Data, "subscription_id")
+	subscriptionID := dodoSubscription(event.Data)
 	if subscriptionID == "" {
 		return Intent{}, fmt.Errorf("%w: %s names no subscription", ErrInvalidEvent, event.Type)
 	}
@@ -370,6 +380,21 @@ func Classify(event Event, businessID string) (Intent, error) {
 		},
 		ProductID: dodoProduct(event.Data),
 	}, nil
+}
+
+// dodoSubscription extracts the subscription ID: a top-level
+// subscription_id first, then a credit-ledger reference — reference_id, but
+// only when reference_type names a subscription. An untyped or differently
+// typed reference is not a subscription, and reading it as one would move
+// the wrong record: a payment-sourced grant's reference_id names a payment.
+func dodoSubscription(raw json.RawMessage) string {
+	if id := dodoString(raw, "subscription_id"); id != "" {
+		return id
+	}
+	if dodoString(raw, "reference_type") != "subscription" {
+		return ""
+	}
+	return dodoString(raw, "reference_id")
 }
 
 // dodoString reads the first present non-empty string field at the given
