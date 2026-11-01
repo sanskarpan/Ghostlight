@@ -1,0 +1,17 @@
+# Traefik static configuration for local Zitadel development.
+#
+# Why a file provider instead of the Docker provider: the Docker socket is
+# unreliable from a Windows-hosted daemon, and this topology never changes —
+# two routers, two services, one origin. Static config is what's running, in
+# full, with nothing to discover at runtime.
+entryPoints:
+  web:
+    address: ":8080"
+
+providers:
+  file:
+    filename: /etc/traefik/routes.yml
+    watch: false
+
+log:
+  level: WARN

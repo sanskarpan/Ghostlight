@@ -1,0 +1,26 @@
+# Static routing: one origin on localhost:8080. The login UI serves under
+# /ui/v2/login (higher priority wins ties); everything else reaches the core
+# API, which also serves the management console SPA.
+http:
+  routers:
+    login:
+      rule: "PathPrefix(`/ui/v2/login`)"
+      service: login
+      entryPoints:
+        - web
+      priority: 100
+    api:
+      rule: "PathPrefix(`/`)"
+      service: api
+      entryPoints:
+        - web
+      priority: 10
+  services:
+    login:
+      loadBalancer:
+        servers:
+          - url: "http://login:3000"
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://zitadel:8080"
