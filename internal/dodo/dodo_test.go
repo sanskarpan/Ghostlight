@@ -64,6 +64,37 @@ func TestVerifyAcceptsAGenuineDelivery(t *testing.T) {
 	}
 }
 
+// A genuine delivery carrying an old event time still verifies: the
+// signature timestamp is the freshness proof, and it covers the body the
+// old event time sits in. This is the dashboard Send-example shape — fixed
+// sample timestamps under a fresh signature — which a separate event-age
+// bound used to turn into forgeries (owner-reported 401, fixed here).
+func TestVerifyAcceptsAnOldEventUnderAFreshSignature(t *testing.T) {
+	old := "2025-08-04T05:45:31Z"
+	payload := fmt.Sprintf(`{"business_id":"bus_1","type":"subscription.renewed","timestamp":%q,"data":{"subscription_id":"sub_1","customer_id":"cus_1"}}`, old)
+	now := time.Now().UTC().Truncate(time.Second)
+	ts := fmt.Sprint(now.Unix())
+	mac := hmac.New(sha256.New, mustKey(dodoSecret))
+	fmt.Fprintf(mac, "%s.%s.%s", "evt_old", ts, payload)
+	sig := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	event, err := Verify(dodoSecret, []byte(payload), "evt_old", ts, sig, now)
+	if err != nil {
+		t.Fatalf("old event under a fresh signature: %v", err)
+	}
+	if event.At().Format("2006-01-02") != "2025-08-04" {
+		t.Errorf("At = %v, want the event's own time to date the intent", event.At())
+	}
+	// The future is still refused: a clock problem, not drift.
+	future := now.Add(time.Hour).Format(time.RFC3339)
+	fpayload := fmt.Sprintf(`{"business_id":"bus_1","type":"subscription.renewed","timestamp":%q,"data":{"subscription_id":"sub_1","customer_id":"cus_1"}}`, future)
+	mac = hmac.New(sha256.New, mustKey(dodoSecret))
+	fmt.Fprintf(mac, "%s.%s.%s", "evt_future", ts, fpayload)
+	fsig := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	if _, err := Verify(dodoSecret, []byte(fpayload), "evt_future", ts, fsig, now); !errors.Is(err, ErrUnverified) {
+		t.Errorf("future event: error = %v, want ErrUnverified", err)
+	}
+}
+
 // Every verification failure must be the same error, or the endpoint teaches
 // a forger which check tripped.
 func TestVerifyFailuresAreIndistinguishable(t *testing.T) {

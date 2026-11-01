@@ -80,10 +80,15 @@ import (
 )
 
 // Verification bounds mirror internal/providerinbox: the signature timestamp
-// proves the delivery is fresh; the event's own timestamp only has to sit
-// inside the retry horizon. Dodo retries for days; the signature proves
-// freshness while the event time only has to prove the event is not from the
-// future and not older than the horizon.
+// proves the delivery is fresh, and it is the only freshness proof. The
+// signature covers `{id}.{timestamp}.{body}`, so a payload timestamp can
+// only arrive under a fresh signature timestamp — an old event cannot be
+// re-stamped without breaking the signature, which makes a separate
+// event-age bound redundant. (It was removed after it turned the
+// dashboard's own Send-example deliveries, which carry fixed sample
+// timestamps, into forgeries.) The event time only dates the intent, and an
+// event from the future is still refused as a clock problem rather than
+// drift.
 const (
 	// SignatureTolerance is how old a delivery signature may be. Older than
 	// this, a valid signature is a replay until proven otherwise.
@@ -91,10 +96,6 @@ const (
 	// FutureSkew is how far ahead of now a timestamp may be before it is a
 	// clock problem rather than drift.
 	FutureSkew = time.Minute
-	// MaxEventAge is how old the event itself may be. Older than this, the
-	// event belongs to an operator investigation, not to automatic
-	// application.
-	MaxEventAge = 72 * time.Hour
 	// MaxBodyBytes bounds the delivery accepted for verification. Webhook
 	// envelopes are small; an unbounded read is a memory allocation the
 	// sender controls.
@@ -234,9 +235,6 @@ func Verify(secret string, body []byte, id, timestamp, signature string, now tim
 			return Event{}, ErrUnverified
 		}
 		if parsed.Sub(now) > FutureSkew {
-			return Event{}, ErrUnverified
-		}
-		if now.Sub(parsed) > MaxEventAge {
 			return Event{}, ErrUnverified
 		}
 		occurred = parsed.UTC()
