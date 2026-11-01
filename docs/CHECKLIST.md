@@ -84,12 +84,12 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | GQ.1 sandbox feasibility | **[WIP]** | decision G-032 recorded 9 Oct 2026; measured overhead, CPU penalty, latencies, guest checks, sign-off outstanding |
 | GQ.2 Temporal capacity | **[WIP]** | decision G-033 recorded 9 Oct 2026; prototype measurements + budget-reframe sign-off outstanding |
 | GQ.3 cost model | **[DONE]** | closed 10 Oct 2026 per ADR G-036; WTP interviews remain under G7.12 |
-| GQ.4 payment/identity | **[WIP]** | decisions G-024/G-025/G-030 recorded, re-decided 31 Oct 2026 by G-038 (Dodo / Zitadel / Resend); providerinbox (15) + billing + stripe + dodo (15) done; Dodo live-wired 1 Nov 2026 (secret + business ID + real test-mode Team/Growth products, start/duplicate/cancel proven live, owner implementation sign-off recorded); Zitadel/Resend sandbox integrations + real-purchase proof remain; Render deploy diagnosed in #182 (Dodo URL blocked on it); issue #93 open |
+| GQ.4 payment/identity | **[WIP]** | decisions G-024/G-025/G-030 recorded, re-decided 31 Oct 2026 by G-038 (Dodo / Zitadel / Resend); providerinbox (15) + billing + stripe + dodo (15) done; Dodo live-wired 1 Nov 2026 (secret + business ID + real test-mode Team/Growth products, start/duplicate/cancel proven live, owner implementation sign-off recorded); `internal/resend` (6) + verification-email gate (3) with live test-mode send proven (email `01a196c7…` queued to `delivered@resend.dev`); Zitadel/Resend sandbox integrations + real-purchase proof remain; Render deploy diagnosed in #182 (Dodo URL blocked on it); issue #93 open |
 | GQ.5 usability/a11y | **[WIP]** | matrix published 9 Oct 2026 (`docs/LIMITATIONS.md`); structural gate done; study + browser audit + interviews remain |
 | GQ.6 dependency isolation | **[WIP]** | decision G-034 recorded 9 Oct 2026; deployed measurements + sign-off outstanding |
 | GQ gate | open | needs dated go/no-go per item with owner, evidence path, ADR; owner reviewed all rows 1 Nov 2026 and approved the code-side state, human tracks (study, screen-reader, legal/DPO, sandbox measurements, fleet) deferred by owner decision |
 
-Suite: 2044 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
+Suite: 2053 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
 
 No code-ownable work remains on the 1.0/1.5 path: every open row needs people (owners, interviews, studies, sign-offs), live sandboxes/providers, deployed fleets/clusters, the GQ.1 re-entry trigger, or a signed enterprise request (G9) / design-partner demand (G8.5, G10). G0–G3, GQ.3, G6.4, G6.6, G7.1/7.2/7.4–7.8, G8.1–8.4/8.6–8.9 and G9.4–9.8 are closed; G4/G5/G10 deferred by ADR G-027.
 
