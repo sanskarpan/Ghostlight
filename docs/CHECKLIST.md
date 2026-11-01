@@ -60,7 +60,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | G7.7 console/reviewer/passport | **[DONE]** | reviewer 19 + passport 18 + console 65 + consolerender (18 + 12 support-rendering) + gate suites; issues #58 closed via #173. Browser WCAG stays under G7.9 |
 | G7.8 support/lifecycle | **[DONE]** | tenant 19 + erasure 15 + support 37 + consolesupport 28 + render 12 + gate 10; issue #59 closed via #173. Full import deferred per SCOPE-RETUNE |
 | G7.9 qualification | **[WIP]** | `internal/a11ygate` (7) + g7 a11y gate (2) + g7.9 privacy gate (5) + headless-Chrome axe audit 1 Nov 2026 (axe-core 4.14, WCAG 2.x A/AA tags: 0 violations, 27 passes on the honest run page; keyboard tab order skip→Abort→Review→search→log region with 3px solid `:focus-visible` outline measured in-browser; no overflow at 360px; log `<pre tabindex=0>` is the recommended scrollable-region pattern; search input properly `<label for>`-bound); study, sandbox, screen-reader pass, badge-contrast meter reading, sign-off remain; issue #60 open |
-| G7.10 identity | **[WIP]** | `internal/identity` (24) policy layer; blocked by GQ.4; Zitadel SSO/SCIM/sandbox remain (re-decided from WorkOS by G-038); local Zitadel v4.20.0 dev env up and verified (`zitadel/`) |
+| G7.10 identity | **[WIP]** | `internal/identity` (24) policy layer + `internal/zitadel` (6) OIDC verifier (discovery-pinned RS256, indistinguishable failures, rotation-following JWKS, live shape pinned vs local Zitadel v4.20.0) + g7.10 seam gate (3, verified-subject → session bind/revoke); Zitadel SSO/SCIM/sandbox round-trips remain (re-decided from WorkOS by G-038); local Zitadel v4.20.0 dev env up and verified (`zitadel/`) |
 | G7.11 privacy/legal | **[WIP]** | `internal/legal` (17) + `docs/PRIVACY.md` + `docs/LEGAL-OPERATIONS.md`; Sanskar Pandey interim owner on all duties (31 Oct 2026), qualified legal review + DPO appointment + DPAs + walkthrough remain |
 | G7.12 design partners | blocked | blocked by G7.9/G7.10/G7.11; no real customer data before G7.11 |
 | G7 gate | open | needs end-to-end pass incl. SaaS subscription + accessible lifecycle |
@@ -89,7 +89,7 @@ Current branch: `main` (plus per-item feature branches). Verification: `go build
 | GQ.6 dependency isolation | **[WIP]** | decision G-034 recorded 9 Oct 2026; deployed measurements + sign-off outstanding |
 | GQ gate | open | needs dated go/no-go per item with owner, evidence path, ADR; owner reviewed all rows 1 Nov 2026 and approved the code-side state, human tracks (study, screen-reader, legal/DPO, sandbox measurements, fleet) deferred by owner decision |
 
-Suite: 2035 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
+Suite: 2044 tests passing, 0 failing, 0 skipped (`go test ./...`; `-race` enforced in CI). Counts above are per-package test functions at close; table-driven cases multiply coverage.
 
 No code-ownable work remains on the 1.0/1.5 path: every open row needs people (owners, interviews, studies, sign-offs), live sandboxes/providers, deployed fleets/clusters, the GQ.1 re-entry trigger, or a signed enterprise request (G9) / design-partner demand (G8.5, G10). G0–G3, GQ.3, G6.4, G6.6, G7.1/7.2/7.4–7.8, G8.1–8.4/8.6–8.9 and G9.4–9.8 are closed; G4/G5/G10 deferred by ADR G-027.
 
