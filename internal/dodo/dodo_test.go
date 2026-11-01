@@ -146,6 +146,15 @@ func TestClassifyMapsTheConsumedSet(t *testing.T) {
 		{"subscription.failed", providerinbox.BillingSubscriptionUpdated},
 		{"subscription.cancelled", providerinbox.BillingSubscriptionCancelled},
 		{"subscription.expired", providerinbox.BillingSubscriptionCancelled},
+		{"credit.added", providerinbox.BillingSubscriptionUpdated},
+		{"credit.deducted", providerinbox.BillingSubscriptionUpdated},
+		{"credit.expired", providerinbox.BillingSubscriptionUpdated},
+		{"credit.rolled_over", providerinbox.BillingSubscriptionUpdated},
+		{"credit.rollover_forfeited", providerinbox.BillingSubscriptionUpdated},
+		{"credit.overage_charged", providerinbox.BillingSubscriptionUpdated},
+		{"credit.overage_reset", providerinbox.BillingSubscriptionUpdated},
+		{"credit.manual_adjustment", providerinbox.BillingSubscriptionUpdated},
+		{"credit.balance_low", providerinbox.BillingSubscriptionUpdated},
 	}
 	for _, c := range cases {
 		body, ts, sig := dodoSigned(dodoSecret, "evt_1", c.typ, "bus_1", subData("sub_1", "cus_1", "prod_team"), dodoNow)
@@ -192,6 +201,69 @@ func TestClassifyReadsNestedCustomerShapes(t *testing.T) {
 		if intent.Billing.CustomerID != "cus_9" {
 			t.Errorf("%s: customer = %q", name, intent.Billing.CustomerID)
 		}
+	}
+}
+
+// TestClassifyCreditLedgerEntry drives the exact dashboard example shape:
+// a credit.added whose subscription arrives as a typed ledger reference
+// rather than a subscription_id. A payment-sourced grant's reference names a
+// payment, so the fallback is gated on reference_type — and a missing or
+// mistyped reference still refuses rather than guessing.
+func TestClassifyCreditLedgerEntry(t *testing.T) {
+	example := `{"amount":"100","balance_after":"1100","balance_before":"1000","brand_id":"brd_123","business_id":"bus_H4ekzPSlcg","created_at":"2025-08-04T06:00:00Z","credit_entitlement_id":"cent_9xY2bKwQn5MjRpL8d","customer_id":"cus_8VbC6JDZzPEqfBPUdpj0K","description":"Credits granted from subscription","grant_id":"cgr_4tH7vNcWx2BfJpK9m","id":"cle_3kF8mPqR7vNwXyZ1a","is_credit":true,"metadata":{},"overage_after":"0","overage_before":"0","payload_type":"CreditLedgerEntry","reference_id":"sub_7EeHq2ewQuadropD2ra","reference_type":"subscription","transaction_type":"credit_added"}`
+	at, _ := time.Parse(time.RFC3339, "2025-08-04T06:05:00Z")
+	ts := fmt.Sprint(at.Unix())
+	mk := func(data string) (Event, error) {
+		payload := `{"business_id":"bus_H4ekzPSlcg","type":"credit.added","timestamp":"2025-08-04T06:00:00Z","data":` + data + `}`
+		mac := hmac.New(sha256.New, mustKey(dodoSecret))
+		fmt.Fprintf(mac, "%s.%s.%s", "evt_credit", ts, payload)
+		sig := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
+		return Verify(dodoSecret, []byte(payload), "evt_credit", ts, sig, at)
+	}
+	event, err := mk(example)
+	if err != nil {
+		t.Fatalf("verify example: %v", err)
+	}
+	intent, err := Classify(event, "")
+	if err != nil {
+		t.Fatalf("classify example: %v", err)
+	}
+	if intent.Billing.Kind != providerinbox.BillingSubscriptionUpdated {
+		t.Errorf("kind = %v, want an observation that changes nothing", intent.Billing.Kind)
+	}
+	if intent.Billing.CustomerID != "cus_8VbC6JDZzPEqfBPUdpj0K" {
+		t.Errorf("customer = %q", intent.Billing.CustomerID)
+	}
+	if intent.Billing.SubscriptionID != "sub_7EeHq2ewQuadropD2ra" {
+		t.Errorf("subscription = %q, want the ledger reference", intent.Billing.SubscriptionID)
+	}
+	if intent.ProductID != "" {
+		t.Errorf("product = %q, want none: a credit observation carries no plan", intent.ProductID)
+	}
+
+	// A payment-sourced grant's reference names a payment, not a
+	// subscription: reading it as one would move the wrong record.
+	paymentSourced := `{"customer_id":"cus_1","reference_id":"pay_9","reference_type":"payment"}`
+	event, err = mk(paymentSourced)
+	if err != nil {
+		t.Fatalf("verify payment-sourced: %v", err)
+	}
+	if _, err := Classify(event, ""); !errors.Is(err, ErrInvalidEvent) {
+		t.Errorf("payment-typed reference: error = %v, want refusal", err)
+	}
+	// subscription_id still wins when both name one: the direct fact beats
+	// the ledger indirection.
+	both := `{"subscription_id":"sub_direct","customer_id":"cus_1","reference_id":"sub_ref","reference_type":"subscription"}`
+	event, err = mk(both)
+	if err != nil {
+		t.Fatalf("verify both: %v", err)
+	}
+	intent, err = Classify(event, "")
+	if err != nil {
+		t.Fatalf("classify both: %v", err)
+	}
+	if intent.Billing.SubscriptionID != "sub_direct" {
+		t.Errorf("subscription = %q, want the direct subscription_id", intent.Billing.SubscriptionID)
 	}
 }
 
@@ -428,6 +500,35 @@ func TestReceiverHonestFailureAndRecovery(t *testing.T) {
 	kept, _ := rc2.Stored("cus_1", "sub_1")
 	if string(kept.Plan.ID) != "team" {
 		t.Errorf("conflict moved the plan to %v", kept.Plan.ID)
+	}
+}
+
+// A credit ledger entry is observed, never applied: against a healthy
+// record it changes nothing and still 200s, and against an unknown
+// subscription it is refused rather than manufacturing a record for
+// dashboard example IDs.
+func TestReceiverObservesCreditLedgerEntries(t *testing.T) {
+	rc := testReceiver()
+	credit := `{"customer_id":"cus_1","reference_id":"sub_1","reference_type":"subscription","transaction_type":"credit_added","amount":"100"}`
+	if code, _ := deliver(t, rc, dodoSecret, "evt_s", "subscription.active", "bus_1", subData("sub_1", "cus_1", "prod_team"), dodoNow); code != http.StatusOK {
+		t.Fatalf("start: code=%d", code)
+	}
+	code, out := deliver(t, rc, dodoSecret, "evt_credit", "credit.added", "bus_1", credit, time.Time{})
+	if code != http.StatusOK || out["applied"] != false {
+		t.Fatalf("credit.added: code=%d body=%v, want acknowledged observation", code, out)
+	}
+	stored, _ := rc.Stored("cus_1", "sub_1")
+	if string(stored.Plan.ID) != "team" || !stored.PaymentFailedAt.IsZero() {
+		t.Errorf("credit observation moved the record: %+v", stored)
+	}
+	// Unknown subscription: refused, and nothing is manufactured.
+	code, _ = deliver(t, rc, dodoSecret, "evt_credit_x", "credit.deducted", "bus_1",
+		`{"customer_id":"cus_x","reference_id":"sub_x","reference_type":"subscription","transaction_type":"credit_deducted","amount":"10"}`, time.Time{})
+	if code != http.StatusBadRequest {
+		t.Fatalf("credit for an unknown subscription: code=%d, want refusal", code)
+	}
+	if _, ok := rc.Stored("cus_x", "sub_x"); ok {
+		t.Error("refused credit created a record")
 	}
 }
 
