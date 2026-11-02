@@ -300,6 +300,15 @@ func TestRenderPageEscapesUntrustedTextEverywhere(t *testing.T) {
 	if !strings.Contains(out, `class="skip-link"`) {
 		t.Error("the document has no skip link")
 	}
+	// A skip link whose target cannot take focus only scrolls: the browser
+	// leaves focus where it was, so the next Tab returns to the top of the
+	// page and the shortcut does nothing. The target must be focusable.
+	if !strings.Contains(out, `id="main" tabindex="-1"`) {
+		t.Error("the skip-link target is not programmatically focusable (want id=\"main\" tabindex=\"-1\")")
+	}
+	if !strings.Contains(out, `href="#main"`) {
+		t.Error("the skip link does not point at the main target")
+	}
 }
 
 func TestRenderPageRefusesAnInvalidModel(t *testing.T) {

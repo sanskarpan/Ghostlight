@@ -141,8 +141,11 @@ func TestBuildTimelineBlocksLaterPhasesAfterAFailure(t *testing.T) {
 		if row.State != PhaseBlocked {
 			t.Errorf("phase %q state = %q, want blocked", p, row.State)
 		}
-		if !strings.Contains(row.Reason, string(PhaseFoundationWarmup)) {
-			t.Errorf("phase %q reason = %q, want the blocking phase named", p, row.Reason)
+		if !strings.Contains(row.Reason, PhaseFoundationWarmup.DisplayName()) {
+			t.Errorf("phase %q reason = %q, want the blocking phase's display name", p, row.Reason)
+		}
+		if strings.Contains(row.Reason, string(PhaseFoundationWarmup)) {
+			t.Errorf("phase %q reason = %q leaks the machine key", p, row.Reason)
 		}
 	}
 }
@@ -155,8 +158,15 @@ func TestBuildTimelineBlocksLaterPhasesAfterAnUncertainOutcome(t *testing.T) {
 	if gates.State != PhaseBlocked {
 		t.Errorf("state = %q, want blocked", gates.State)
 	}
-	if !strings.Contains(gates.Reason, string(PhaseMigration)) {
-		t.Errorf("reason = %q, want the blocking phase named", gates.Reason)
+	// The reason names the phase the way an operator reads it. The kebab-case
+	// identifier is a machine key and must never reach user-facing text: the
+	// heading beside it says "Migration", and "blocked by migration" would make
+	// the reader translate mid-incident.
+	if !strings.Contains(gates.Reason, "Migration") {
+		t.Errorf("reason = %q, want the blocking phase's display name", gates.Reason)
+	}
+	if strings.Contains(gates.Reason, string(PhaseMigration)) {
+		t.Errorf("reason = %q, leaks the machine key %q", gates.Reason, string(PhaseMigration))
 	}
 }
 

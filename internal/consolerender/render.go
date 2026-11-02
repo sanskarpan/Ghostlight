@@ -193,7 +193,11 @@ func renderDocument(title, body string) string {
 	b.WriteString("<header>\n")
 	fmt.Fprintf(&b, "<h1>%s</h1>\n", console.EscapeHTML(title))
 	b.WriteString("</header>\n")
-	b.WriteString(`<main id="main">` + "\n")
+	// tabindex="-1" makes the target programmatically focusable, so a skip
+	// link actually moves focus here rather than only scrolling. Without it,
+	// keyboard users land back at the top of the tab order — the skip link
+	// appears to work and does nothing.
+	b.WriteString(`<main id="main" tabindex="-1">` + "\n")
 	b.WriteString(body)
 	b.WriteString("</main>\n")
 	b.WriteString("</body>\n")
@@ -867,20 +871,11 @@ func renderTime(b *strings.Builder, t time.Time) {
 }
 
 // phaseName is the human-readable name of a phase.
+//
+// The mapping lives on the phase itself so the timeline's "blocked by …" text
+// and this heading cannot drift apart.
 func phaseName(p console.Phase) string {
-	switch p {
-	case console.PhaseArtifactBuild:
-		return "Artifact build"
-	case console.PhaseFoundationWarmup:
-		return "Foundation warmup"
-	case console.PhaseDependencyAllocation:
-		return "Dependency allocation"
-	case console.PhaseMigration:
-		return "Migration"
-	case console.PhaseGates:
-		return "Gates"
-	}
-	return string(p)
+	return p.DisplayName()
 }
 
 // phaseLabel is the text a phase badge carries.
