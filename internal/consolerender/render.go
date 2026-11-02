@@ -925,12 +925,28 @@ func actionLabel(s console.ActionState) string {
 // pageCSS is the console's stylesheet.
 //
 // The rules that carry a requirement are the skip link, the focus outline, the
-// full-width touch targets on a narrow screen and the horizontal scroll container
-// for wide tables. Nothing animates, so nothing needs a reduced-motion branch.
+// full-width touch targets on a narrow screen, the horizontal scroll container
+// for wide tables, and the explicit Canvas/CanvasText pair. Nothing animates, so
+// nothing needs a reduced-motion branch.
+//
+// The canvas pair is stated rather than inherited. Relying on the UA's default
+// text and background still contrasts correctly — they are system colours by
+// definition — but it leaves the guarantee unwritten: a later rule setting one
+// colour without the other would break contrast silently. Naming both makes the
+// pair reviewable and makes a half-change visible. Every other colour on the
+// page is `currentColor`, so badges, borders and outlines follow the text colour
+// and cannot drift from it.
+//
+// A checker cannot resolve `Canvas` / `CanvasText` — they are system colour
+// keywords whose values depend on the platform — so axe reports colour contrast
+// as "incomplete" rather than pass or fail. That is the correct answer for a
+// stylesheet written in system colours; the measured values are recorded in
+// docs/CHECKLIST.md, taken from the browser's computed colours in both light and
+// dark schemes (worst case 5.33:1 against a 4.5:1 requirement).
 const pageCSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; color: CanvasText; background-color: Canvas; }
 header, main { max-width: 72rem; margin: 0 auto; padding: 1rem; }
 h1 { font-size: 1.5rem; }
 h2 { font-size: 1.25rem; margin-top: 2rem; }
