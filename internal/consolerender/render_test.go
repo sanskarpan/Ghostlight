@@ -309,6 +309,15 @@ func TestRenderPageEscapesUntrustedTextEverywhere(t *testing.T) {
 	if !strings.Contains(out, `href="#main"`) {
 		t.Error("the skip link does not point at the main target")
 	}
+	// Contrast is only guaranteed if text and background are named together:
+	// a stylesheet that sets one and not the other can silently produce
+	// invisible text, and neither a reviewer nor a checker can resolve an
+	// inherited canvas.
+	for _, want := range []string{"color: CanvasText", "background-color: Canvas"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the stylesheet does not state %q: the contrast pair must be explicit", want)
+		}
+	}
 }
 
 func TestRenderPageRefusesAnInvalidModel(t *testing.T) {
