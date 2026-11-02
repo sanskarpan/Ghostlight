@@ -111,7 +111,7 @@ func TestG7A11yGateNoticesEachBreakage(t *testing.T) {
 			rule:    a11ygate.RuleSkipLink,
 		},
 		"skip target removed": {
-			breakIt: "REPLACE:<main id=\"main\">:<main>",
+			breakIt: "REPLACE:<main id=\"main\" tabindex=\"-1\">:<main>",
 			rule:    a11ygate.RuleFragmentTarget,
 		},
 		"button unnamed": {

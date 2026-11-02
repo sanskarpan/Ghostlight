@@ -186,8 +186,11 @@ func TestTheTimelineLayerBlocksLaterPhasesAfterAFailedPhase(t *testing.T) {
 		if row.State != console.PhaseBlocked {
 			t.Errorf("phase %q state = %q, want %q", p, row.State, console.PhaseBlocked)
 		}
-		if !strings.Contains(row.Reason, string(console.PhaseFoundationWarmup)) {
-			t.Errorf("phase %q reason = %q, want the blocking phase named", p, row.Reason)
+		if !strings.Contains(row.Reason, console.PhaseFoundationWarmup.DisplayName()) {
+			t.Errorf("phase %q reason = %q, want the blocking phase named the way the heading names it", p, row.Reason)
+		}
+		if strings.Contains(row.Reason, string(console.PhaseFoundationWarmup)) {
+			t.Errorf("phase %q reason = %q leaks the machine key", p, row.Reason)
 		}
 	}
 

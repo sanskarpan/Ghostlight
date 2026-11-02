@@ -182,6 +182,31 @@ func PhaseOrder() []Phase {
 	}
 }
 
+// DisplayName is the phase's human-readable name.
+//
+// The identifier is kebab-case and exists for stable machine comparison; it is
+// not what an operator should read. The name lives here rather than in the
+// renderer so that every user-facing string — including the "blocked by …"
+// reason written by BuildTimeline — names the same thing. A study participant
+// reading "blocked by foundation-warmup" beside a heading saying "Foundation
+// warmup" has to translate a machine key mid-incident, which is exactly the
+// moment they have least attention to spare.
+func (p Phase) DisplayName() string {
+	switch p {
+	case PhaseArtifactBuild:
+		return "Artifact build"
+	case PhaseFoundationWarmup:
+		return "Foundation warmup"
+	case PhaseDependencyAllocation:
+		return "Dependency allocation"
+	case PhaseMigration:
+		return "Migration"
+	case PhaseGates:
+		return "Gates"
+	}
+	return string(p)
+}
+
 // knownPhase reports whether a phase is one the console renders.
 func knownPhase(p Phase) bool {
 	for _, known := range PhaseOrder() {
@@ -325,7 +350,7 @@ func BuildTimeline(actions []RecordedAction) Timeline {
 		switch progress[i].State {
 		case PhaseFailed, PhaseUncertain:
 			if blocker == "" {
-				blocker = string(progress[i].Phase)
+				blocker = progress[i].Phase.DisplayName()
 			}
 			// A phase that failed or is uncertain keeps its own state. It ran
 			// and it did not settle; calling it blocked would hide a real
