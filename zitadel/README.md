@@ -23,6 +23,13 @@ docker compose -f zitadel/docker-compose.yml down      # stop, keep data
 docker compose -f zitadel/docker-compose.yml down -v   # stop AND wipe all data
 ```
 
+**Use `localhost`, never `127.0.0.1`.** The instance's `EXTERNALDOMAIN` is
+`localhost`, so opening `http://127.0.0.1:8080/ui/login` fails with
+`Instance not found. Make sure you got the domain right` — the stack is healthy
+and the URL is the problem. The two hosts are not interchangeable to Zitadel
+even though they reach the same listener. `curl` and browser both need the same
+catch: prefer `localhost` there too.
+
 Verify it is up:
 
 ```powershell
