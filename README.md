@@ -18,17 +18,24 @@ claim, and [SCOPE-RETUNE.md](docs/SCOPE-RETUNE.md) for what gates revenue.
 
 ## Implementation status
 
-The design specification is complete. Implementation has started at the
-foundation, and is deliberately built from the hardest invariants outward rather
-than from the API surface inward.
+The application layer is complete: 79 packages under `internal/`, eight binaries
+under `cmd/`, and a suite of 2,055 test functions across 83 packages, all green.
+A reference deployment of the platform API runs on Render against PostgreSQL
+(`/health/live`, `/health/ready`, `/version`; every other route authenticated).
 
-| Package | Contents | State |
-|---|---|---|
-| `internal/environments` | Lifecycle state machine, candidate identity, admission and teardown ordering | 13 tests passing |
-| `internal/actions` | Durable action ledger, generation/epoch fencing, uncertain-outcome handling | 14 tests passing |
-| `internal/provider` | Capability contract; the only cloud-aware package | Interface, no adapter yet |
-| `migrations` | Core schema: org boundary, environments, generations, actions, resource ledger, RLS | 19 tests against real PostgreSQL |
-| `test/fake` | Reference model provider reproducing external failure modes | 17 tests passing |
+What is **not** complete is anything that needs a cloud account, a fleet, live
+provider sandboxes or a human. `docs/CHECKLIST.md` carries the per-item truth and
+names exactly what unblocks each open row.
+
+| Layer | State |
+|---|---|
+| Lifecycle, ledger, reconciliation (`internal/{environments,actions,reconcile,postgres,statelock}`) | Complete — lifecycle state machine, durable action ledger, generation/epoch fencing, uncertain-outcome handling, observe-before-retry |
+| Isolation policy (`internal/{policygate,seed,previewaccess,allocators,foundation}`) | Complete as policy; deployed cluster proof outstanding (G2 gate) |
+| Gates and evidence (`internal/{evidence,evidencestore,confidence,invalidation,harness,reportoutbox}`) | Complete — generation-bound signed evidence, no faked passes, current-head verification |
+| SaaS (`internal/{onboarding,billing,subscription,entitlements,providerinbox,dodo,stripe,resend}`) | Complete as code; Dodo wired end to end in test mode, live purchase outstanding |
+| Console and accessibility (`internal/{console,consolerender,consolesupport,a11ygate}`) | Complete, including a structural WCAG 2.2 AA gate and a clean axe-core audit |
+| Identity (`internal/{identity,zitadel}`) | Policy layer and OIDC verifier complete; hosted SSO/SCIM round-trips outstanding |
+| `internal/provider` | Cloud-capability contract, no concrete adapter — intentional, see below |
 
 Run the suite:
 
@@ -39,6 +46,15 @@ go test ./...
 The schema tests start a real PostgreSQL instance via `embedded-postgres`, so no
 database service needs to be installed. The first run downloads PostgreSQL
 binaries.
+
+To see the console without an account, a preview or a cluster:
+
+```sh
+go run ./cmd/consoledemo   # http://127.0.0.1:8099/
+```
+
+That is the entry point for the usability and screen-reader sessions in
+[docs/ACCESSIBILITY-STUDY.md](docs/ACCESSIBILITY-STUDY.md).
 
 ### What is deliberately not built yet
 
