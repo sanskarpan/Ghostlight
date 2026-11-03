@@ -25,6 +25,13 @@
 //	                         malformed means the server refuses to start: an
 //	                         API with no credentials configured is a
 //	                         misconfiguration, not a mode.
+//	GHOSTLIGHT_WEBUI_KEY     Hex signing key (64 chars / 32 bytes) for the
+//	                         browser console's CSRF tokens. Unset means the
+//	                         console is not mounted at all and the deployment
+//	                         stays API-only, which is the current default.
+//	                         Present-but-malformed refuses the start: a console
+//	                         whose tokens anyone could forge is worse than no
+//	                         console. Sessions are in-memory and end on restart.
 //	DODO_WEBHOOK_SECRET      Signing secret for the Dodo webhook endpoint.
 //	                         Missing means the route stays mounted and refuses
 //	                         every delivery: an unverifiable endpoint must not
@@ -65,7 +72,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -78,9 +87,11 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/billing"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/dodo"
+	"github.com/sanskarpan/Ghostlight/internal/identity"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/postgres"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
+	"github.com/sanskarpan/Ghostlight/internal/webui"
 	"github.com/sanskarpan/Ghostlight/migrations"
 
 	_ "github.com/lib/pq"
@@ -169,7 +180,7 @@ func writeJSON(w http.ResponseWriter, status int, body map[string]any) {
 // needs them is a health endpoint that never answers. billingStore names the
 // billing record backend ("postgres" or "memory") so an operator can see
 // whether restarts forget — it names the backend, never a credential.
-func newMux(build string, backend *api.Server, billingStore string) *http.ServeMux {
+func newMux(build string, backend *api.Server, billingStore string, root http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -206,7 +217,10 @@ func newMux(build string, backend *api.Server, billingStore string) *http.ServeM
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"service": serviceName, "build": build})
 	})
-	mux.Handle("/", backend)
+	if root == nil {
+		root = backend
+	}
+	mux.Handle("/", root)
 	return mux
 }
 
@@ -238,7 +252,11 @@ func buildMux(getenv func(string) string, backend *api.Server, store billing.Rec
 	if err != nil {
 		return nil, err
 	}
-	mux := newMux(buildSHA(getenv), backend, storeName)
+	root, _, err := htmlRoot(getenv, backend)
+	if err != nil {
+		return nil, err
+	}
+	mux := newMux(buildSHA(getenv), backend, storeName, root)
 	mux.Handle("/hooks/dodo", rc)
 	if strings.TrimSpace(getenv("DODO_WEBHOOK_SECRET")) == "" {
 		log.Printf("dodo webhook receiver mounted but unconfigured (DODO_WEBHOOK_SECRET unset): deliveries will be refused")
@@ -247,6 +265,100 @@ func buildMux(getenv func(string) string, backend *api.Server, store billing.Rec
 	}
 	return mux, nil
 }
+
+// htmlRoot builds the browser-console root: everything that is not the JSON API
+// requires a session, and an unauthenticated browser is redirected to sign in.
+// It returns nil when the console is disabled, which is the current default, so
+// the API-only deployment is unchanged.
+func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *identity.Manager, error) {
+	raw := strings.TrimSpace(getenv("GHOSTLIGHT_WEBUI_KEY"))
+	if raw == "" {
+		return nil, nil, nil
+	}
+	key, err := hex.DecodeString(raw)
+	if err != nil || len(key) != 32 {
+		return nil, nil, errors.New("GHOSTLIGHT_WEBUI_KEY must be 64 hex characters (32 bytes)")
+	}
+	manager, err := identity.NewManager(time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	transport, err := webui.NewTransport(manager, key, time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err := consoleRoot(backend, transport)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Printf("browser console mounted at / (sessions are in-memory and end on restart)")
+	return root, manager, nil
+}
+
+// consoleRoot builds the browser surface over a transport. /v1 stays the JSON
+// API with its bearer authentication; everything else is the browser surface,
+// which currently has two pages: the sign-in placeholder and the signed-in
+// placeholder that FE-3 replaces with real screens.
+//
+// /login is served, not redirected: Require sends unauthenticated browsers
+// there, so a redirect from /login to /login would be an infinite loop and a
+// 404 would strand every signed-out visitor. The page says plainly that the
+// flow arrives with FE-2 - a missing feature and a broken loop are different
+// facts.
+func consoleRoot(backend *api.Server, transport *webui.Transport) (http.Handler, error) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1" {
+			backend.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/login" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(loginPlaceholderHTML))
+			return
+		}
+		transport.Require(SessionPage()).ServeHTTP(w, r)
+	}), nil
+}
+
+const loginPlaceholderHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in - Ghostlight</title></head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<main id="main" tabindex="-1">
+<h1>Sign-in is not wired yet</h1>
+<p>The console's session transport exists; the identity-provider flow lands with
+the next change. Until then there is nothing to sign in with.</p>
+</main>
+</body>
+</html>
+`
+
+// SessionPage is the authenticated placeholder until FE-3 serves real pages.
+// It is a constant document with no untrusted input, and it must still pass the
+// accessibility gate, because it is served HTML like any other.
+func SessionPage() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(placeholderHTML))
+	})
+}
+
+const placeholderHTML = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Ghostlight console</title></head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<main id="main">
+<h1>Signed in</h1>
+<p>The console is not built yet. This page exists so the session, the route
+protection and the CSRF handling have something real to protect.</p>
+</main>
+</body>
+</html>
+`
 
 // buildSHA reports the build this binary came from: Render's injected commit
 // first, an explicit override second, and an honest "unknown" otherwise.

@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,10 +14,14 @@ import (
 	"time"
 
 	"github.com/sanskarpan/Ghostlight/api"
+	"github.com/sanskarpan/Ghostlight/internal/a11ygate"
+	"github.com/sanskarpan/Ghostlight/internal/billing"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/dodo"
+	"github.com/sanskarpan/Ghostlight/internal/identity"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
+	"github.com/sanskarpan/Ghostlight/internal/webui"
 )
 
 func testBackend(tokens map[string]contract.Principal) *api.Server {
@@ -97,7 +102,7 @@ func get(t *testing.T, mux *http.ServeMux, path, token string) (int, map[string]
 func TestHealthEndpointsAreOpenAndHonest(t *testing.T) {
 	mux := newMux("test-sha", testBackend(map[string]contract.Principal{
 		"t1": {ID: "ada"},
-	}), "memory")
+	}), "memory", nil)
 	if code, body := get(t, mux, "/health/live", ""); code != http.StatusOK || body["status"] != "live" {
 		t.Errorf("live: code=%d body=%v", code, body)
 	}
@@ -126,7 +131,7 @@ func TestHealthEndpointsAreOpenAndHonest(t *testing.T) {
 func TestAPIRoutesStayAuthenticated(t *testing.T) {
 	mux := newMux("test-sha", testBackend(map[string]contract.Principal{
 		"t1": {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read"}},
-	}), "memory")
+	}), "memory", nil)
 	// No token: 401, full stop.
 	if code, _ := get(t, mux, "/v1/environments/env-1", ""); code != http.StatusUnauthorized {
 		t.Errorf("no token: code=%d, want 401", code)
@@ -189,7 +194,7 @@ func TestBuildSHAOrder(t *testing.T) {
 }
 
 func TestReadyReportsNoSecrets(t *testing.T) {
-	mux := newMux("s", testBackend(nil), "memory")
+	mux := newMux("s", testBackend(nil), "memory", nil)
 	_, body := get(t, mux, "/health/ready", "")
 	raw, _ := json.Marshal(body)
 	if strings.Contains(string(raw), "tok") || strings.Contains(string(raw), "ada") {
@@ -381,10 +386,210 @@ func TestOpenBillingStoreRefusesAnUnreachableDatabase(t *testing.T) {
 }
 
 func TestReadyNamesTheBillingBackend(t *testing.T) {
-	mux := newMux("s", testBackend(nil), "postgres")
+	mux := newMux("s", testBackend(nil), "postgres", nil)
 	_, body := get(t, mux, "/health/ready", "")
 	backing, _ := body["backing"].(map[string]any)
 	if backing["billing_store"] != "postgres" {
 		t.Errorf("ready backing = %v, want the postgres backend named", body["backing"])
+	}
+}
+
+const webuiTestKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func webuiEnv() func(string) string {
+	return func(key string) string {
+		if key == "GHOSTLIGHT_WEBUI_KEY" {
+			return webuiTestKey
+		}
+		return ""
+	}
+}
+
+// Without a signing key the console is not mounted at all, so an existing
+// API-only deployment keeps behaving exactly as it did: JSON everywhere.
+func TestConsoleUnmountedWithoutAKey(t *testing.T) {
+	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: the API-only behaviour must be unchanged", rec.Code)
+	}
+}
+
+// A malformed signing key refuses the start rather than serving a console whose
+// CSRF tokens anyone could forge.
+func TestConsoleWithABadKeyRefusesStartup(t *testing.T) {
+	for _, bad := range []string{"not-hex", "aabb", webuiTestKey + "00"} {
+		env := func(key string) string {
+			if key == "GHOSTLIGHT_WEBUI_KEY" {
+				return bad
+			}
+			return ""
+		}
+		if _, err := buildMux(env, testBackend(nil), dodo.NewMemoryStore(), "memory"); err == nil {
+			t.Errorf("key %q must refuse startup", bad)
+		}
+	}
+}
+
+// With a key, the HTML root requires a session: an unauthenticated browser is
+// redirected to sign in while the JSON API on /v1 stays bearer-authenticated
+// with its own 401 semantics.
+func TestConsoleRootRequiresASessionAndLeavesTheAPIAlone(t *testing.T) {
+	mux, err := buildMux(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("console without a session: status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
+	}
+
+	// The API keeps its own contract: 401 with a problem body, not a redirect.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/environments/env-1", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("API without credentials: status = %d, want 401", rec.Code)
+	}
+}
+
+// A signed-in browser reaches the placeholder page, which is real served HTML
+// and must therefore pass the accessibility gate like every other page.
+func TestSignedInBrowserReachesThePlaceholderAndItPassesTheGate(t *testing.T) {
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	session, _, err := mgr.StartSession("principal-1", false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signed-in status = %d want 200, location=%q body=%q", rec.Code, rec.Header().Get("Location"), rec.Body.String()[:min(80, rec.Body.Len())])
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content type = %q, want text/html", ct)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `<html lang="en">`) {
+		t.Error("the page must declare its language")
+	}
+	if !strings.Contains(body, "<title>Ghostlight console</title>") {
+		t.Error("the page must have a title")
+	}
+	if !strings.Contains(body, "<h1>") {
+		t.Error("the page must have exactly one h1")
+	}
+	if !strings.Contains(body, `href="#main"`) {
+		t.Error("the page must carry the skip link")
+	}
+
+	rep, err := a11ygate.AuditDocument(body)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Errorf("the placeholder violates %d accessibility rules; served HTML is not exempt", len(rep.Violations))
+		for _, v := range rep.Violations {
+			t.Logf("  %s: %s", v.Rule, v.Detail)
+		}
+	}
+}
+
+// A session started through the wired mux is revoked server-side by logout
+// semantics: after Revoke, the same cookie is a redirect again.
+func TestWiredConsoleRevocationEndsAccess(t *testing.T) {
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	session, _, err := mgr.StartSession("principal-1", false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	do := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := do(); code != http.StatusOK {
+		t.Fatalf("before revoke: status = %d, want 200", code)
+	}
+	if err := mgr.Revoke(session.ID, "logged out", time.Now()); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if code := do(); code != http.StatusFound {
+		t.Errorf("after revoke: status = %d, want 302", code)
+	}
+}
+
+// buildMuxWithSessions is buildMux with the console enabled, returning the
+// session manager the mux actually uses, so tests start sessions on the same
+// store the transport verifies against rather than on a parallel one.
+func buildMuxWithSessions(getenv func(string) string, backend *api.Server, store billing.RecordStore, storeName string) (*http.ServeMux, *identity.Manager, error) {
+	key, err := hex.DecodeString(webuiTestKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	manager, err := identity.NewManager(time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	transport, err := webui.NewTransport(manager, key, time.Now)
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err := consoleRoot(backend, transport)
+	if err != nil {
+		return nil, nil, err
+	}
+	mux := newMux(buildSHA(getenv), backend, storeName, root)
+	receiver, err := dodoReceiver(getenv, store)
+	if err != nil {
+		return nil, nil, err
+	}
+	mux.Handle("/hooks/dodo", receiver)
+	return mux, manager, nil
+}
+
+// /login is served rather than redirected: Require sends unauthenticated
+// browsers there, so redirecting /login to /login would loop forever. Until
+// FE-2 wires the identity flow, the page says so with 503, and it is still
+// served HTML and still audited.
+func TestLoginPlaceholderServesInsteadOfLooping(t *testing.T) {
+	mux, _, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Sign-in is not wired yet") {
+		t.Error("the page must say plainly that the flow is not wired")
+	}
+	rep, err := a11ygate.AuditDocument(rec.Body.String())
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Errorf("the login placeholder violates %d accessibility rules", len(rep.Violations))
 	}
 }
