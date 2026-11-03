@@ -2,7 +2,7 @@
 
 G0–G6 supply the technical lifecycle/scaling/chaos foundations. G7–G9 add the complete SaaS/team/enterprise product, while G10 is a discovery horizon. G7 organization, repository ownership and entitlements begin alongside G0/G1; they are paid-launch prerequisites. Keel supplies the first fixture, but supported future customers use independent reviewed recipes.
 
-GQ is a blocking qualification phase that precedes any irreversible commitment in G2, G4 or G7. Three of its items (GQ.1 sandbox runtime, GQ.2 Temporal capacity enforcement, GQ.3 unit economics) decide questions that were previously answered by assumption and that determine whether the 1.0 plan is buildable and affordable at all. GQ.1 and GQ.2 gate G2.7/G2.8; GQ.3 and GQ.4 gate G7.3/G7.9. See QUALIFICATION-PLAN.md.
+GQ is a blocking qualification phase that precedes any irreversible commitment in G2, G4 or G7. Three of its items (GQ.1 sandbox runtime, GQ.2 Temporal capacity enforcement, GQ.3 unit economics) decide questions that were previously answered by assumption and that determine whether the 1.0 plan is buildable and affordable at all. GQ.1 and GQ.2 gate G2.7/G2.8; GQ.3 and GQ.4 gate G7.3/G7.9. See QUALIFICATION-PLAN.md. **Where an item began against a recorded decision before its qualification closed, the remaining decision is re-qualification of shipped work rather than permission to start** — the 31 October 2026 amendment, stated in full in the GQ gate in `CHECKLIST.md`.
 
 SCOPE-RETUNE.md records which phases are load-bearing prerequisites for the first paying customer versus scale-dependent or enterprise-dependent work that should sit behind a post-revenue design-partner gate. Those decisions were **accepted on 6 October 2026** (ADR G-027, G-029, G-030):
 
@@ -10,7 +10,7 @@ SCOPE-RETUNE.md records which phases are load-bearing prerequisites for the firs
 - **All of G9** is on signed customer request.
 - **G8.5 comparable runs** are deferred; ship raw before/after numbers first.
 - **1.0 admits only pull requests from bound repositories authored by write-access principals** (ADR G-029). Fork and external-contributor previews are not admitted, and the sandbox RuntimeClass is deferred with them — which reduces 1.0 containment strength. See SECURITY.md 1.1 for what stays enforced, what is genuinely weaker, and the re-entry trigger.
-- **Payments and identity providers are selected** (ADR G-030): hosted Stripe Billing + Meters + Stripe Tax, and a managed identity provider behind Ghostlight's own organization and role tables.
+- **Payments and identity providers are selected** — originally ADR G-030 (hosted Stripe Billing + Meters + Stripe Tax, and a managed identity provider behind Ghostlight's own organization and role tables), **re-decided 31 October 2026 by ADR G-038**: Dodo Payments as merchant of record, self-hosted Zitadel for identity, Resend for transactional email. The Stripe-shaped transport and inbox code remains as the Dodo adapter's tested sibling; nothing live had integrated, so no migration exists.
 - **Assisted onboarding replaces self-serve signup** at 1.0.
 
 1.0 is one product, one recipe, one plan, with a published support/limitation matrix rather than an unqualified isolation claim.
