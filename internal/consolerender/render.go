@@ -531,7 +531,7 @@ func renderRepositories(view console.View, query string, filters []console.Filte
 	b.WriteString("</form>\n")
 
 	count := view.Count()
-	fmt.Fprintf(&b, `<p class="count">%d %s</p>`+"\n", count.Value, console.EscapeHTML(count.Name))
+	fmt.Fprintf(&b, `<p class="count">%d %s</p>`+"\n", count.Value, console.EscapeHTML(plural(count.Name, count.Value)))
 	repos := view.Repositories()
 	if strings.TrimSpace(query) != "" {
 		repos = view.Search(query)
@@ -895,6 +895,23 @@ func phaseLabel(s console.PhaseState) string {
 		return "Blocked"
 	}
 	return string(s)
+}
+
+// plural renders a counter noun for its value.
+//
+// "1 repositories" is what a screen reader announces as "one repositories", and a
+// count line is read aloud far more often than it is read visually, so the singular
+// matters more here than in prose. Only the two English plural forms the counters
+// actually use are handled; a noun in neither form is left alone rather than guessed
+// at, because a wrong singular is worse than a plural on a number.
+func plural(noun string, value int) string {
+	if value != 1 {
+		return noun
+	}
+	if strings.HasSuffix(noun, "ies") {
+		return strings.TrimSuffix(noun, "ies") + "y"
+	}
+	return strings.TrimSuffix(noun, "s")
 }
 
 // actionLabel is the text an action badge carries.
