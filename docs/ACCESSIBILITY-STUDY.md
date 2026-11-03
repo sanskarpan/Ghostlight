@@ -112,3 +112,52 @@ Add to the G7.9 and GQ.5 rows in `docs/CHECKLIST.md`: date, who, what was
 measured, what was found, and what changed as a result. A session that found
 nothing still gets its line, because "we ran it and it passed" is evidence and
 silence is not.
+
+## 5. Recording sheet
+
+Copy this block per participant into `docs/STUDY-RESULTS.md` as each session
+finishes, while it is fresh. A session recorded from memory a week later is a
+session with the hesitations smoothed out, and the hesitations are the finding.
+
+```text
+### Session N — <date>
+
+Participant: <role and rough experience, not a name>. Consented to notes: <yes/no>
+Reader/browser and version: <e.g. NVDA 2026.1 / Chrome 143>
+Facilitator: <who ran it>. Duration: <minutes>
+
+Screen-reader pass (only if this session included it):
+  1 first announcements:   <verbatim, three lines>
+  2 skip link announced:   <what was said>
+  3 after Enter:           <where focus landed; did Tab continue inside main?>
+  4 abort announced:       <the words> / tabs from top: <n>
+  5 per phase:             <name + state + reason, as announced>
+  6 recovery advice:       <was it attached to the action?>
+  7 live region:           <announced? how often? disruptive?>
+  8 healthy vs uncertain:  <could they tell the difference by ear?>
+  Pass (a) state (b) blocked phase (c) found abort: <yes/no each>
+
+Usability tasks (assisted = the facilitator had to point):
+  | # | outcome | seconds | assisted |
+  | 1 |         |         |          |
+  | 2 |         |         |          |
+  | 3 |         |         |          |
+  | 4 |         |         |          |
+  | 5 |         |         |          |
+
+Post-task answers:
+  1 what "uncertain" meant before the reason: <verbatim>
+  2 a moment unsure which button was safe:    <verbatim>
+  3 what was missing from the screen:         <verbatim>
+
+Hesitation quotes (verbatim, with the moment they happened): <quotes>
+
+Findings: <one line each; mark which repeated a previous session>
+```
+
+Reconcile before changing anything: a finding seen in two or more sessions is
+the one to fix, and a single-participant finding is recorded without being
+acted on. When a session produces a fix, the fix gets its own test — the
+`1 repositories` → `1 repository` defect came from reading the count line aloud,
+and is now pinned by `TestRenderPageCountUsesTheSingularForOne`.
+
