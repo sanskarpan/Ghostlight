@@ -32,9 +32,9 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 |---|---|---|---|
 | `G0.1` | task | G0.1 Close research Q-05 through Q-08; select/lock cloud accounts, dependency versions and quotas. **Blocked by: GQ.1, GQ.2.** | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/2) |
 
-| `G0.2` | task | G0.2 Create platform Go modules, API/auth, validated catalog/config and platform database schema. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/3) |
+| `G0.2` | task | G0.2 Create platform Go modules, API/auth, validated catalog/config and platform database schema. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/3) |
 
-| `G0.3` | task | G0.3 Define environment/generation/action/resource state model and independent reference tests. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/4) |
+| `G0.3` | task | G0.3 Define environment/generation/action/resource state model and independent reference tests. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/4) |
 
 | `G0.4` | task | G0.4 Establish preview account, protected runner build/provenance, artifact/state/evidence KMS boundaries. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/5) |
 
@@ -44,7 +44,7 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 
 | `G0.7` | task | G0.7 Define platform supply-chain policy: pinned base/AMI images, image provenance and SBOM, CVE/patch SLA for host and sandbox guest kernel, third-party base-image allowlist and pinned-action upgrade path. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/97) |
 
-| `G0-GATE` | gate | G0 gate: untrusted build cannot obtain provisioning/signing/production credentials. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/8) |
+| `G0-GATE` | gate | G0 gate: untrusted build cannot obtain provisioning/signing/production credentials. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/8) |
 
 
 ## G1 — Durable local lifecycle
@@ -160,11 +160,11 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 
 | `G6.3` | task | G6.3 Exercise platform upgrades against old module/state/runner versions. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/48) |
 
-| `G6.4` | task | G6.4 Install runbook-backed operator tooling, key rotation, on-call ownership, severity definitions, customer incident communications and postmortems. Instrumentation moved to G3.7. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/49) |
+| `G6.4` | task | G6.4 Install runbook-backed operator tooling, key rotation, on-call ownership, severity definitions, customer incident communications and postmortems. Instrumentation moved to G3.7. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/49) |
 
 | `G6.5` | task | G6.5 Publish Ghostlight teardown with measured provisioning/scaling/recovery/cost data. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/50) |
 
-| `G6.6` | task | G6.6 Define and enforce the public API lifecycle: OpenAPI publication, compatibility window, deprecation/sunset policy and consumer notification. The CLI inherits the same policy. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/100) |
+| `G6.6` | task | G6.6 Define and enforce the public API lifecycle: OpenAPI publication, compatibility window, deprecation/sunset policy and consumer notification. The CLI inherits the same policy. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/100) |
 
 | `G6-GATE` | gate | G6 technical gate: signed fleet/security/cleanup/recovery evidence; current candidate contract and operational owner ready. Paid 1.0 also requires G7. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/51) |
 
@@ -173,17 +173,17 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 
 | Checklist ID | Type | Checklist item | GitHub issue |
 |---|---|---|---|
-| `G7.1` | task | G7.1 Implement organization/trial/region/terms/sample setup and bounded abuse admission; G-F01. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/52) |
+| `G7.1` | task | G7.1 Implement organization/trial/region/terms/sample setup and bounded abuse admission; G-F01. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/52) |
 
-| `G7.2` | task | G7.2 Implement org RLS/composite FKs, project/repository ACL, invitations/members/service principals and revocation; G-F02. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/53) |
+| `G7.2` | task | G7.2 Implement org RLS/composite FKs, project/repository ACL, invitations/members/service principals and revocation; G-F02. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/53) |
 
 | `G7.3` | task | G7.3 Implement subscription checkout/portal/provider inbox, entitlements/meters and grace/cancel/downgrade with always-available abort/cleanup; G-F03/G-F11. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/54) |
 
-| `G7.4` | task | G7.4 Build verified GitHub installation/repository wizard, revocation/reassignment and integration health; G-F04/G-F12. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/55) |
+| `G7.4` | task | G7.4 Build verified GitHub installation/repository wizard, revocation/reassignment and integration health; G-F04/G-F12. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/55) |
 
-| `G7.5` | task | G7.5 Build versioned service/template catalog, qualification/publication/deprecation and pinned old cleanup runtime; G-F05. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/56) |
+| `G7.5` | task | G7.5 Build versioned service/template catalog, qualification/publication/deprecation and pinned old cleanup runtime; G-F05. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/56) |
 
-| `G7.6` | task | G7.6 Implement authenticated preview gateway, audience/origin protection, guest grants and current-generation access; G-F07. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/57) |
+| `G7.6` | task | G7.6 Implement authenticated preview gateway, audience/origin protection, guest grants and current-generation access; G-F07. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/57) |
 
 | `G7.7` | task | G7.7 Build accessible console/progress/timelines, reviewer room/generation feedback and immutable evidence passports; G-F08/G-F09/G-F10. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/58) |
 
@@ -204,23 +204,23 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 
 | Checklist ID | Type | Checklist item | GitHub issue |
 |---|---|---|---|
-| `G8.1` | task | G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15. **Blocked by: G8.7, G8.8.** | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/64) |
+| `G8.1` | task | G8.1 Publish scoped API/CLI authentication/permission/idempotency parity and CI integration; G-F15. **Blocked by: G8.7, G8.8.** | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/64) |
 
-| `G8.2` | task | G8.2 Implement bounded topology DAG/service/network recipes and independently qualified templates; G-F16. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/65) |
+| `G8.2` | task | G8.2 Implement bounded topology DAG/service/network recipes and independently qualified templates; G-F16. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/65) |
 
-| `G8.3` | task | G8.3 Add versioned synthetic fixtures/snapshots, current-generation reset and fresh-identity clone; G-F17/G-F19. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/66) |
+| `G8.3` | task | G8.3 Add versioned synthetic fixtures/snapshots, current-generation reset and fresh-identity clone; G-F17/G-F19. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/66) |
 
-| `G8.4` | task | G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18. Closes Q-15. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/67) |
+| `G8.4` | task | G8.4 Implement schedule/DST occurrence model, suspension/retention/residual cost, admission-aware resume and unchanged TTL; G-F18. Closes Q-15. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/67) |
 
 | `G8.5` | task | G8.5 Implement compatible candidate/baseline comparison with observation/confidence checks; G-F20. Deferred behind a post-revenue gate per SCOPE-RETUNE.md. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/68) |
 
-| `G8.6` | task | G8.6 Implement bounded failure-replay recipes and investigation workspace without live external effects; G-F21. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/69) |
+| `G8.6` | task | G8.6 Implement bounded failure-replay recipes and investigation workspace without live external effects; G-F21. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/69) |
 
-| `G8.7` | task | G8.7 Add read-only policy preview, action-digest approvals and execution reauthorization; G-F22. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/70) |
+| `G8.7` | task | G8.7 Add read-only policy preview, action-digest approvals and execution reauthorization; G-F22. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/70) |
 
-| `G8.8` | task | G8.8 Add bounded fair admissions, team quotas and no-overbooking calendar reservations; G-F23. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/71) |
+| `G8.8` | task | G8.8 Add bounded fair admissions, team quotas and no-overbooking calendar reservations; G-F23. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/71) |
 
-| `G8.9` | task | G8.9 Qualify Slack/Teams/Jira notice/finding connectors with redaction and scoped identity; G-F24. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/72) |
+| `G8.9` | task | G8.9 Qualify Slack/Teams/Jira notice/finding connectors with redaction and scoped identity; G-F24. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/72) |
 
 | `G8-GATE` | gate | G8 team gate: suspend/reset/expire/update races, CLI parity, fixture privacy, comparison/replay/fairness and retained-resource economics pass; requalify fleet envelope. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/73) |
 
@@ -235,15 +235,15 @@ Note on numbering: there is no issue #1 in this repository. GitHub #1 was a pull
 
 | `G9.3` | task | G9.3 Qualify a separate management/watchdog failure domain from the target cluster, independent bounded cleanup for each supported fault, provider/API/clock failure reporting, customer emergency/disconnect path. Tags are not TTL; unsupported failure classes remain unresolved; close Q-20; G-F26. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/76) |
 
-| `G9.4` | task | G9.4 Implement bounded versioned policy tests/publication/approvals and visible expiring exceptions; G-F27. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/77) |
+| `G9.4` | task | G9.4 Implement bounded versioned policy tests/publication/approvals and visible expiring exceptions; G-F27. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/77) |
 
-| `G9.5` | task | G9.5 Build native drift detection/ownership classification and reviewed serialized remediation plans; G-F28. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/78) |
+| `G9.5` | task | G9.5 Build native drift detection/ownership classification and reviewed serialized remediation plans; G-F28. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/78) |
 
-| `G9.6` | task | G9.6 Build service owners/dependency coverage, fresh/unknown/stale methodology and scorecards; G-F29. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/79) |
+| `G9.6` | task | G9.6 Build service owners/dependency coverage, fresh/unknown/stale methodology and scorecards; G-F29. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/79) |
 
-| `G9.7` | task | G9.7 Implement scheduled approved campaigns/game days, per-run reauthorization/abort and immutable remediation task history; G-F30. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/80) |
+| `G9.7` | task | G9.7 Implement scheduled approved campaigns/game days, per-run reauthorization/abort and immutable remediation task history; G-F30. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/80) |
 
-| `G9.8` | task | G9.8 Qualify SIEM/evidence export/signature rotation, retention/hold and closure; G-F31. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/81) |
+| `G9.8` | task | G9.8 Qualify SIEM/evidence export/signature rotation, retention/hold and closure; G-F31. | [Closed issue](https://github.com/sanskarpan/Ghostlight/issues/81) |
 
 | `G9.9` | task | G9.9 Qualify dedicated/regional fleet and enterprise support/shared responsibility; G-F32. | [Open issue](https://github.com/sanskarpan/Ghostlight/issues/82) |
 
