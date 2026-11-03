@@ -447,3 +447,52 @@ func TestRenderPageIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A count line is read aloud far more often than it is read visually, so "1
+// repositories" is a defect: a screen reader announces "one repositories".
+func TestRenderPageCountUsesTheSingularForOne(t *testing.T) {
+	out, err := consolerender.RenderPage(basePage())
+	if err != nil {
+		t.Fatalf("RenderPage: %v", err)
+	}
+	if strings.Contains(out, "1 repositories") {
+		t.Error(`the page says "1 repositories"; a screen reader announces that as "one repositories"`)
+	}
+	if !strings.Contains(out, `class="count">1 repository<`) {
+		t.Errorf("the page does not state the singular count, got %q", countLine(out))
+	}
+}
+
+// The plural is unchanged for any other count, so the fix does not break the case it
+// was not aimed at.
+func TestRenderPageCountKeepsThePluralForMoreThanOne(t *testing.T) {
+	page := basePage()
+	page.Repositories = console.NewView(
+		console.Scope{OrganizationID: "org-1", ProjectIDs: []string{"project-1"}},
+		[]console.Repository{
+			{ID: "repo-1", FullName: "acme/api", ProjectID: "project-1", OrganizationID: "org-1"},
+			{ID: "repo-2", FullName: "acme/web", ProjectID: "project-1", OrganizationID: "org-1"},
+		},
+	)
+	out, err := consolerender.RenderPage(page)
+	if err != nil {
+		t.Fatalf("RenderPage: %v", err)
+	}
+	if !strings.Contains(out, `class="count">2 repositories<`) {
+		t.Errorf("the page does not state the plural count, got %q", countLine(out))
+	}
+}
+
+// countLine returns the rendered count paragraph, for failure messages.
+func countLine(out string) string {
+	const marker = `class="count">`
+	i := strings.Index(out, marker)
+	if i < 0 {
+		return "no count line"
+	}
+	rest := out[i+len(marker):]
+	if j := strings.Index(rest, "<"); j > 0 {
+		return rest[:j]
+	}
+	return rest
+}

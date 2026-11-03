@@ -82,6 +82,16 @@ var (
 	ErrUnknownRequestKind = errors.New("no such rights request kind")
 	// ErrNoDetectionTime means a breach record carries no detection time.
 	ErrNoDetectionTime = errors.New("breach must carry a detection time")
+	// ErrNoNotifiabilityReason means a notifiability decision carries no reason.
+	// The decision is recorded even when the answer is no, because "not notifiable"
+	// with no recorded reason is indistinguishable from not having looked.
+	ErrNoNotifiabilityReason = errors.New("notifiability decision must carry a reason")
+	// ErrNoOutcome means a breach was closed without recording an outcome.
+	ErrNoOutcome = errors.New("closed breach must record an outcome")
+	// ErrNotifyAfterDeadline means a notification was recorded after the
+	// framework's deadline. It is not corrected quietly, because the lateness is
+	// the fact a regulator asks about.
+	ErrNotifyAfterDeadline = errors.New("notification recorded after the deadline")
 )
 
 // Jurisdiction is where a customer is established. It is not the platform's region.
@@ -491,4 +501,140 @@ func Overdue(j Jurisdiction, req RightsRequest, at time.Time) (bool, error) {
 		return false, err
 	}
 	return at.After(deadline), nil
+}
+
+// Notifiability is the decision recorded at step 3 of the breach runbook.
+//
+// A breach is not notifiable until somebody decides it is, and the decision is
+// recorded with its reason even when the answer is no: "not notifiable" with no
+// recorded reason is indistinguishable from not having looked, and the runbook's
+// whole purpose is that the reasoning survives the incident.
+type Notifiability string
+
+const (
+	// NotifiabilityUndecided means nobody has yet judged the breach. It is the
+	// zero value on purpose, so an undecided breach cannot be mistaken for a
+	// considered "no".
+	NotifiabilityUndecided Notifiability = ""
+	// Notifiable means the breach must be reported to the supervisory authority.
+	Notifiable Notifiability = "notifiable"
+	// NotNotifiable means the breach need not be reported, for a recorded reason.
+	NotNotifiable Notifiability = "not-notifiable"
+)
+
+// Breach is the record of one incident, following the runbook in
+// docs/LEGAL-OPERATIONS.md section 3.
+//
+// The record exists because a deadline is not an incident. Knowing that a breach
+// must be reported within 72 hours does not record that it was detected, whether it
+// was judged notifiable or why, whether the notification actually happened, and what
+// was learned. Those are the facts a regulator asks for, and each step is a separate
+// field so a missing step is visible as a missing step rather than as a gap in prose.
+type Breach struct {
+	// ID identifies the incident in the audit trail.
+	ID string
+	// Jurisdiction is the jurisdiction of the affected organisation, which picks
+	// the framework. It is not the platform's region.
+	Jurisdiction Jurisdiction
+	// DetectedAt is when the incident was detected. It is the clock start: the
+	// deadline is measured from here, not from triage, so a record without it
+	// cannot be reported on time no matter how fast the runbook moves afterwards.
+	DetectedAt time.Time
+	// Notifiability is the step-3 decision, and Reason is why.
+	Notifiability Notifiability
+	// Reason is why the decision was made. Required for any decided value.
+	Reason string
+	// NotifiedAt is when the supervisory authority was notified. Zero means not
+	// yet notified.
+	NotifiedAt time.Time
+	// CustomersNotifiedAt is when affected customers were told, where the
+	// framework requires it. Zero means not yet.
+	CustomersNotifiedAt time.Time
+	// Outcome records what happened, including anything not done and why, so the
+	// next incident starts from what was learned rather than from nothing.
+	Outcome string
+}
+
+// Deadline returns the date this breach must be reported by.
+func (b Breach) Deadline() (time.Time, error) {
+	return BreachDeadline(b.Jurisdiction, b.DetectedAt)
+}
+
+// Validate reports whether the record's steps are in a consistent state.
+//
+// It validates what was recorded, not whether the incident was handled well: an
+// overdue breach is a recorded fact, not a validation failure, because refusing to
+// store a late notification loses the evidence that it was late.
+func (b Breach) Validate() error {
+	if b.DetectedAt.IsZero() {
+		return ErrNoDetectionTime
+	}
+	if _, err := FrameworkFor(b.Jurisdiction); err != nil {
+		return err
+	}
+	if b.Notifiability != NotifiabilityUndecided && strings.TrimSpace(b.Reason) == "" {
+		return ErrNoNotifiabilityReason
+	}
+	// A notification can only follow a decision that it was notifiable. Notifying
+	// a breach judged not-notifiable means one of the two records is wrong.
+	if !b.NotifiedAt.IsZero() && b.Notifiability != Notifiable {
+		return ErrNoNotifiabilityReason
+	}
+	return nil
+}
+
+// Notify records a notification to the supervisory authority at the given time.
+//
+// Lateness is returned as an error rather than accepted silently. The record still
+// holds the late notification, because the lateness is the fact a regulator asks
+// about and a record that quietly absorbed it would hide exactly the thing worth
+// knowing; the returned error is the signal to escalate, not a reason to discard.
+func (b *Breach) Notify(at time.Time) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	if b.Notifiability != Notifiable {
+		return ErrNoNotifiabilityReason
+	}
+	deadline, err := b.Deadline()
+	if err != nil {
+		return err
+	}
+	b.NotifiedAt = at
+	if at.After(deadline) {
+		return ErrNotifyAfterDeadline
+	}
+	return nil
+}
+
+// Close records the outcome of a handled breach.
+//
+// An empty outcome is refused: a closed breach with nothing recorded is a breach
+// whose lessons were paid for and thrown away.
+func (b *Breach) Close(outcome string) error {
+	if strings.TrimSpace(outcome) == "" {
+		return ErrNoOutcome
+	}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	b.Outcome = outcome
+	return nil
+}
+
+// OverdueBreach reports whether a notifiable breach has passed its deadline without
+// being notified. A breach that is not notifiable is never overdue, because there is
+// nothing to report.
+func OverdueBreach(b Breach) (bool, error) {
+	if err := b.Validate(); err != nil {
+		return false, err
+	}
+	if b.Notifiability != Notifiable || !b.NotifiedAt.IsZero() {
+		return false, nil
+	}
+	deadline, err := b.Deadline()
+	if err != nil {
+		return false, err
+	}
+	return time.Now().After(deadline), nil
 }

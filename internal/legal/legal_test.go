@@ -383,3 +383,154 @@ func TestHappyPathLaunchReview(t *testing.T) {
 		t.Errorf("the stale artifact must be named, got %v", review.StaleArtifacts)
 	}
 }
+
+// A breach is a record of steps, not a deadline. Each step is a separate field so a
+// missing step is visible as a missing step rather than as a gap in prose.
+func TestABreachRecordsEachRunbookStep(t *testing.T) {
+	b := Breach{
+		ID:            "breach-1",
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    now,
+		Notifiability: Notifiable,
+		Reason:        "customer digests were exposed across organisations",
+	}
+	if err := b.Validate(); err != nil {
+		t.Fatalf("a recorded incident must validate: %v", err)
+	}
+	deadline, err := b.Deadline()
+	if err != nil {
+		t.Fatalf("Deadline: %v", err)
+	}
+	if !deadline.Equal(now.Add(72 * time.Hour)) {
+		t.Errorf("EU breach deadline = %s, want 72 hours from detection", deadline)
+	}
+	if err := b.Notify(now.Add(24 * time.Hour)); err != nil {
+		t.Fatalf("notifying inside the window must succeed: %v", err)
+	}
+	if !b.NotifiedAt.Equal(now.Add(24 * time.Hour)) {
+		t.Errorf("NotifiedAt = %s, want the recorded time", b.NotifiedAt)
+	}
+	if err := b.Close("tokens revoked, customers told, alerting widened"); err != nil {
+		t.Fatalf("closing with an outcome must succeed: %v", err)
+	}
+	if b.Outcome == "" {
+		t.Error("the outcome must be stored")
+	}
+}
+
+// A record with no detection time cannot be reported on time no matter how fast the
+// runbook moves afterwards, so it is refused rather than defaulted to "now".
+func TestABreachWithoutADetectionTimeIsRefused(t *testing.T) {
+	b := Breach{Jurisdiction: JurisdictionEU, Notifiability: Notifiable, Reason: "x"}
+	if err := b.Validate(); !errors.Is(err, ErrNoDetectionTime) {
+		t.Errorf("Validate error = %v, want ErrNoDetectionTime", err)
+	}
+	if _, err := b.Deadline(); !errors.Is(err, ErrNoDetectionTime) {
+		t.Errorf("Deadline error = %v, want ErrNoDetectionTime", err)
+	}
+}
+
+// "Not notifiable" with no recorded reason is indistinguishable from not having
+// looked, and the runbook exists so the reasoning survives the incident.
+func TestANotifiabilityDecisionNeedsAReason(t *testing.T) {
+	b := Breach{
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    now,
+		Notifiability: NotNotifiable,
+	}
+	if err := b.Validate(); !errors.Is(err, ErrNoNotifiabilityReason) {
+		t.Errorf("Validate error = %v, want ErrNoNotifiabilityReason", err)
+	}
+	b.Reason = "internal only, no personal data involved"
+	if err := b.Validate(); err != nil {
+		t.Errorf("a reasoned not-notifiable decision must validate: %v", err)
+	}
+}
+
+// The zero value is undecided on purpose, so an unexamined breach cannot be mistaken
+// for a considered "no".
+func TestAnUndecidedBreachIsNeitherNotifiableNorDecided(t *testing.T) {
+	b := Breach{Jurisdiction: JurisdictionEU, DetectedAt: now}
+	if b.Notifiability != NotifiabilityUndecided {
+		t.Errorf("zero value = %q, want undecided", b.Notifiability)
+	}
+	if err := b.Validate(); err != nil {
+		t.Errorf("an undecided record is incomplete, not invalid: %v", err)
+	}
+	if err := b.Notify(now); !errors.Is(err, ErrNoNotifiabilityReason) {
+		t.Errorf("Notify on an undecided breach error = %v, want refusal", err)
+	}
+}
+
+// Notifying a breach judged not-notifiable means one of the two records is wrong.
+func TestNotifyingANonNotifiableBreachIsRefused(t *testing.T) {
+	b := Breach{
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    now,
+		Notifiability: NotNotifiable,
+		Reason:        "no personal data",
+		NotifiedAt:    now.Add(time.Hour),
+	}
+	if err := b.Validate(); !errors.Is(err, ErrNoNotifiabilityReason) {
+		t.Errorf("Validate error = %v, want ErrNoNotifiabilityReason", err)
+	}
+}
+
+// Lateness is the fact a regulator asks about, so it is returned as an error while the
+// record keeps the late notification rather than discarding it.
+func TestALateNotificationIsKeptAndReported(t *testing.T) {
+	b := Breach{
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    now,
+		Notifiability: Notifiable,
+		Reason:        "personal data exposed",
+	}
+	late := now.Add(96 * time.Hour)
+	if err := b.Notify(late); !errors.Is(err, ErrNotifyAfterDeadline) {
+		t.Errorf("Notify error = %v, want ErrNotifyAfterDeadline", err)
+	}
+	if !b.NotifiedAt.Equal(late) {
+		t.Error("the late notification must still be recorded: the lateness is the evidence")
+	}
+}
+
+// A closed breach with nothing recorded is a breach whose lessons were paid for and
+// thrown away.
+func TestClosingWithoutAnOutcomeIsRefused(t *testing.T) {
+	b := Breach{
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    now,
+		Notifiability: NotNotifiable,
+		Reason:        "no personal data",
+	}
+	if err := b.Close("   "); !errors.Is(err, ErrNoOutcome) {
+		t.Errorf("Close error = %v, want ErrNoOutcome", err)
+	}
+}
+
+// Overdue is computed for a notifiable breach that has not been notified; a breach
+// judged not notifiable has nothing to report and is therefore never overdue.
+func TestOverdueBreachIsComputed(t *testing.T) {
+	notifiable := Breach{
+		Jurisdiction:  JurisdictionEU,
+		DetectedAt:    time.Now().Add(-96 * time.Hour),
+		Notifiability: Notifiable,
+		Reason:        "personal data exposed",
+	}
+	overdue, err := OverdueBreach(notifiable)
+	if err != nil {
+		t.Fatalf("OverdueBreach: %v", err)
+	}
+	if !overdue {
+		t.Error("a notifiable breach past 72 hours without notification is overdue")
+	}
+	notifiable.Notifiability = NotNotifiable
+	notifiable.Reason = "no personal data"
+	overdue, err = OverdueBreach(notifiable)
+	if err != nil {
+		t.Fatalf("OverdueBreach: %v", err)
+	}
+	if overdue {
+		t.Error("a breach with nothing to report cannot be overdue")
+	}
+}
