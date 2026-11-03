@@ -3,11 +3,17 @@
 Protocol: [`ACCESSIBILITY-STUDY.md`](ACCESSIBILITY-STUDY.md). Record each session
 here while it is fresh, using the sheet in section 5 of that document.
 
-**Status: no sessions recorded yet.** This file exists so that a session has
-somewhere to land the same day it runs. An empty results file is an honest
-statement that the study has not happened; a results file holding invented
-sessions would be worse than an empty one, because GQ.5 and G7.9 would then be
-closed against evidence nobody gathered.
+**Status: reported as partly done on 3 Nov 2026, with no session notes supplied.**
+The owner answered "partly" with evidence "verbally" — sessions were run, but no
+recordings, notes, participant count or quotes reached this repository. They are
+therefore **not** counted as evidence towards GQ.5. The study's entire value is
+what participants actually did — time-to-abort, where they hesitated, what the
+word "uncertain" meant to them before they read the reason — and a verbal summary
+cannot carry any of that. Nothing here has been invented to fill the gap.
+
+**To close this:** send the notes, or re-run with the sheet in section 5 of the
+protocol. No names are needed; role, rough experience, timings and verbatim
+quotes are enough.
 
 ## What is already proven, and therefore not a session's job
 
@@ -33,5 +39,6 @@ should not be spent on them (see `CHECKLIST.md` G7.9):
 
 ## What remains for GQ.5 / G7.9
 
-- 2–3 usability sessions with participants who have debugged a CI failure before;
+- session notes for the sessions the owner reports as run (or a re-run using the
+  recording sheet), which is what would let GQ.5 close;
 - design-partner interviews for willingness to pay (G7.12).
