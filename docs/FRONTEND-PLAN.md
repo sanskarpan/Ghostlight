@@ -1,7 +1,9 @@
 # Frontend plan — 1.0 vertical slice
 
-Status: **draft for design approval.** No implementation ticket is opened until the design
-language in §4 is approved. Tracked by issue #213.
+Status: **approved 4 November 2026.** The owner approved both decisions on 4 November 2026:
+the architecture in §3/§3a (server-rendered HTML + htmx) and the **Stacked** layout in §6.
+Layouts other than Stacked were considered and rejected — see §6a. Tickets are tracked in
+§11. Tracked by issue #213.
 
 ## 1. What exists, and what this plan does not throw away
 
@@ -242,6 +244,41 @@ before the confirm button**, because admission is where a customer commits money
 a POST carrying a CSRF token; the response is 303 to the new environment's detail page, which
 shows the queued state. Nothing claims readiness before a native observation.
 
+## 6a. Layout decision, and why the alternatives lost
+
+**Approved: Stacked** — one column, in operator reading order. The deciding argument is the
+accessibility design itself: the entire G7.9 evidence chain (keyboard tab order
+skip → Abort → Review, the polite live region that must never obscure abort, forced-colors
+rendering, the 360px and 200% zoom checks) was measured against a single-column page whose
+controls sit above every live region. Stacked preserves those invariants at every width by
+construction.
+
+| Alternative | Why rejected |
+|---|---|
+| **Split** (metadata rail beside the timeline) | Below 720px it collapses to the same stack, so the wide layout must be re-verified against the focus and live-region rules at every breakpoint, and the abort control's relationship to the region changes across them. More a11y surface, no operator gain at 1.0 scale. |
+| **Table-first** (list above detail) | Buries the abort control beneath a list that grows without bound. Worst case for a 2am operator who needs one interaction to stop a run, and it makes the tab order depend on row count. |
+
+Revisit Split only if a surface genuinely needs side-by-side state, and then only with a
+re-run of the keyboard and screen-reader passes at both breakpoints.
+
+## 6b. The environment detail screen, as approved
+
+Order is fixed and is part of the acceptance criteria for every ticket that touches it:
+
+1. **Header** — environment name, repository, source SHA, generation, state badge
+   (glyph + word), TTL remaining.
+2. **Controls** — `Abort the run` (focus order 1), `Review the candidate` (2), `Refresh` (3).
+   Abort is a plain form POST; it is never an htmx target and never inside a live region.
+3. **Progress** — ordered timeline; each phase carries name, glyph+word badge, action count,
+   reason when the state is not self-explanatory, last update. This is the htmx live region.
+4. **Actions** — recorded actions with state, reason, and for uncertain the recovery line
+   ("check the provider's state before retrying").
+5. **Cost** — forecast and confirmed, separated.
+6. **Log** — bounded, escaped, ANSI-stripped, own scroll region.
+
+Badges come from `internal/console`'s canonical registry (13 glyphs, glyph + word, never
+colour-only). Targets stay ≥44px. The focus ring stays 3px solid `currentColor`.
+
 ## 7. States every screen must render
 
 Per `docs/JOURNEYS.md` §8, every action exposes: loading, denied, conflict, expired, quota and
@@ -294,6 +331,27 @@ Four phases, each independently shippable and each leaving the product more usab
    are plain forms with 303 redirects; htmx is not used on any of them, so they keep working
    without JavaScript.
 
-Detailed tickets are written after the design language in §4–§6 is approved, so that ticket
-acceptance criteria can name concrete badges, glyphs and layouts rather than describing them
-twice.
+Detailed tickets were written on 4 November 2026 after the design was approved; their
+acceptance criteria name the concrete badges, glyphs and layouts of §4–§6b rather than
+describing them twice. They are listed in §11.
+
+## 11. Tickets
+
+All under the frontend epic **#213**. Order is the build order; FE-9 is the gate that closes
+the seam and lands last so it covers everything before it.
+
+| Ticket | Phase | What it delivers |
+|---|---|---|
+| [#217](https://github.com/sanskarpan/Ghostlight/issues/217) FE-1 | 1 | Session transport: cookie auth, route protection, CSRF, principal resolution through `internal/identity` |
+| [#218](https://github.com/sanskarpan/Ghostlight/issues/218) FE-2 | 1 | Zitadel authorization-code sign-in, callback, logout; tested against the local dev stack |
+| [#219](https://github.com/sanskarpan/Ghostlight/issues/219) FE-3 | 2 | Environment detail served from `cmd/server` through `consolerender` — the first production HTML |
+| [#220](https://github.com/sanskarpan/Ghostlight/issues/220) FE-4 | 2 | Overview + environments list, org/project scoped, honest empty states, not-in-release pages |
+| [#221](https://github.com/sanskarpan/Ghostlight/issues/221) FE-5 | 3 | Vendored htmx 2.0.11, self-perpetuating timeline live region, **two-consecutive-swap regression** |
+| [#222](https://github.com/sanskarpan/Ghostlight/issues/222) FE-6 | 4 | Create environment with the admission forecast before confirm; quota/denied render their own glyphs |
+| [#223](https://github.com/sanskarpan/Ghostlight/issues/223) FE-7 | 4 | Abort and destroy as plain form POSTs (no htmx, no JS required), confirm-page destroy |
+| [#224](https://github.com/sanskarpan/Ghostlight/issues/224) FE-8 | 4 | `docs/API.md` reconciliation — implement or remove the 23 missing families; a route-reality test |
+| [#225](https://github.com/sanskarpan/Ghostlight/issues/225) FE-9 | gate | The servability gate: served-HTML a11y enumeration, keyboard order, live-region discipline, no-secrets, scoping — **a feature that is not served is not shipped** |
+
+Every ticket carries the three assertions from §2 — a route test over real HTTP with a
+session, a gate assertion over the served bytes, and an `a11ygate` run on what the browser
+receives — so the seam that hid #213 cannot hide the next gap.
