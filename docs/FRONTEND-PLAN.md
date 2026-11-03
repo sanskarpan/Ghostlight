@@ -10,18 +10,15 @@ The UI layer is built and tested. The gap is that nothing serves it.
 | Piece | Tests | What it is |
 |---|---|---|
 | `internal/console` | 72 | View model: screens, regions, controls, timelines, badges, tables, charts, filters, log views |
-| `internal/consolerender` | 30 | Renders that model to accessible HTML |
+| `internal/consolerender` | 32 | Renders that model to accessible HTML |
 | `internal/consolesupport` | 28 | Org-scoped support, help, notices, status |
 | `internal/a11ygate` | 7 | WCAG 2.2 AA structural gate over rendered output |
 
-**Decision: keep server-rendered HTML and extend it.** The console model already refuses
-invalid models, the renderer already escapes at write time, and the gate already enforces
-sixteen WCAG rules over the real output. A client framework would make all of that dead code
-and require rebuilding seventy-two tested screens with duplicate validation in a second
-language.
+**Decision: server-rendered HTML with htmx 2.0.11 for live regions — not a SPA, not a template engine change.** Everything below is measured against a working prototype, not argued from preference; §3a records what was actually run.
 
-`RenderPage` is called today from exactly one place: `cmd/consoledemo`. This plan makes it
-reachable from `cmd/server` behind a session.
+A client framework would make all four packages dead code and require the validation rules to be reimplemented in TypeScript, where they would diverge. The research (3 Nov 2026) also found that operator surfaces in this category are overwhelmingly server-rendered: Fly.io runs Phoenix LiveView, Buildkite runs Rails + Turbo + Stimulus with React islands, and GitHub states publicly that it is mid-migration from Rails-rendered pages to React. JS-native companies (Vercel) use their own framework; no Go shop with one developer writes a SPA dashboard.
+
+`RenderPage` is called today from exactly one place: `cmd/consoledemo`. This plan makes it reachable from `cmd/server` behind a session.
 
 ## 2. The seam that failed, and how this plan prevents a repeat
 
@@ -34,7 +31,9 @@ therefore ship with each frontend ticket:
    the abort control, the current generation and the recovery line — the same assertions
    G7.9 already makes on the demo page.
 3. **An `a11ygate` run over the served bytes**, so the WCAG guarantee covers what a browser
-   actually receives rather than what the renderer would produce.
+   actually receives rather than what the renderer would produce. For a live region, that
+   means auditing the parent page **with the fragment applied**, never the fragment alone
+   (§3a: a bare fragment fails five document-level rules by construction).
 
 ## 3. Architecture
 
@@ -42,12 +41,16 @@ therefore ship with each frontend ticket:
 Browser ──GET /──────────────► cmd/server
           ◄── 302 /login ─────  (no cookie)
           ◄── 200 HTML ───────  consolerender.RenderPage(<model built from store>)
+                                 + vendored htmx 2.0.11 (go:embed, immutable cache)
 
 Browser ──GET /login─────────► authorization-code redirect to Zitadel
           ◄── 302 callback ───  set HttpOnly, Secure, SameSite=Lax session cookie
 
-Browser ──POST /env/{id}/abort► + CSRF token + session
-          ◄── 303 /env/{id} ──  then the page shows the uncertain/aborting state
+Browser ──POST /env/{id}/abort► + CSRF token + session          ← plain form, no htmx
+          ◄── 303 /env/{id} ──  then the page shows the aborting state
+
+Browser ──GET /env/{id}/timeline► (htmx, every 4s)              ← live region only
+          ◄── 200 HTML fragment  carrying its own hx-get so polling continues
 ```
 
 Rules that hold for every route:
@@ -59,14 +62,85 @@ Rules that hold for every route:
 - **No secret reaches a page.** The renderer already receives a view model with redacted
   fields; the server must not hand it a store handle or an unredacted record.
 - **The abort control is never obscured and never behind a disclosure.** It is in the first
-  focus order and outside every live region, which the model already enforces.
+  focus order and outside every live region, which the model already enforces — and it is
+  never an htmx target, so a script failure cannot make abort unreachable.
+- **Every htmx fragment re-emits its own polling attributes.** `outerHTML` swapping discards
+  the attributes on the replaced element; without re-emission the first update silently stops
+  all later ones (§3a, measured). A test must assert two consecutive swaps.
 
 ### Why not a SPA
 
 React would need the console's validation rules re-implemented in TypeScript or the rules
 would diverge, and the WCAG gate — the strongest accessibility evidence in the project —
-would stop covering the shipped artifact. Revisit only if a surface genuinely needs
-client-side state that a full page load cannot express, and then as an island, not a rewrite.
+would stop covering the shipped artifact. WebAIM Million (March 2026) found React pages
+averaged 43.5 errors against 56.1 overall, so a SPA is not an accessibility win either; it
+simply costs the evidence while buying client routing and optimistic updates, both of which
+§8 excludes. Revisit only if a surface genuinely needs client-side state that a full page load
+cannot express, and then as an island, not a rewrite.
+
+## 3a. The htmx decision, and what a prototype proved
+
+**Chosen: htmx 2.0.11 with `htmx-ext-sse` 2.2.4, vendored into the binary.** Verified on
+3 November 2026: npm `latest` is 2.0.11, `next` is 4.0.1, sse extension 2.2.4. Measured
+gzipped size: **16,861 bytes** for htmx plus **1,085** for the SSE extension — about 18 KB
+total, served from `go:embed` with an immutable cache header. No Node in CI.
+
+htmx 4.0.1 ships built-in morphing, which is genuinely better for a live timeline because it
+preserves focus; it stays on `next` until early 2027 by the maintainers' own statement, so
+this plan targets 2.0.11 and revisits morphing when 4.x becomes `latest` rather than paying
+for two migrations.
+
+### The fragment trap, measured
+
+`a11ygate.AuditDocument` audits **whole documents**. A bare htmx-swappable fragment —
+
+```html
+<section role="status" aria-live="polite"><h3>Progress</h3><button>Abort the run</button></section>
+```
+
+— fails with **five** violations (`A11Y-DOC-LANG`, `A11Y-DOC-TITLE`, `A11Y-H1-ONE`,
+`A11Y-SKIP-LINK`, `A11Y-HEADING-ORDER`), because it is not a document and was never meant to
+be one. This is correct behaviour, not a defect, but it decides the test strategy: **audit the
+assembled full page on every render path**, and for any fragment, render its parent page with
+the fragment applied and audit that. Never audit a fragment in isolation — the noise would
+train the team to ignore the gate.
+
+### What the prototype established
+
+A throwaway `cmd/protoui` served the real `RenderPage` output with htmx injected and polled a
+`/env/timeline` fragment. Four things were confirmed in a browser and then the prototype was
+deleted:
+
+1. **The swap is real.** Timeline `complete` badges went 4 → 6 with no page reload — a
+   `window` marker survived the update, which a reload would have cleared.
+2. **The gate still passes on served bytes.** `AuditDocument` over the response body carrying
+   htmx attributes, its script tag and the modified timeline returned **0 violations**. The
+   gate's guarantee survives the client library.
+3. **Focus order is untouched.** After swapping, the focusable order remained
+   `skip link → Abort the run → Review the candidate → search`.
+4. **A trap worth a test:** `hx-swap="outerHTML"` replaces the element *carrying the polling
+   attributes*, so the first update stops all future updates. The prototype showed exactly
+   this — `complete` went 4 → 6 and then froze. The fragment must re-emit its own `hx-get` /
+   `hx-trigger`, and a regression test must assert that **two** consecutive swaps occur, not
+   one. A single-swap test passes on the broken implementation.
+
+### Where htmx is allowed
+
+Only on live regions that update without operator action: the environment timeline, the run
+status region, queue position. **Never** on the abort control, the review control, or any
+form submission — those stay plain POSTs with a CSRF token and a 303, so they work with
+JavaScript disabled and under forced-colors mode, and so a failed script can never make abort
+unreachable.
+
+### Rejected, with reasons
+
+| Option | Why not |
+|---|---|
+| **Datastar 1.0.4** | Good fit and a Go SDK, but it owns the DOM-patch contract and its docs carry no accessibility or no-JS story. The console has no client-side signals worth managing. |
+| **templ 0.3.11** | Solves a problem not present: `Component.Render(ctx, io.Writer)` is the shape `RenderPage` already has. Adds generation to the build and generated files to review, pre-1.0. |
+| **Alpine.js 3.17.5** | `x-show`/`x-cloak` encourage client-side visibility switching, which is exactly what the gate's hidden-focus rule and the forced-colors requirement exist to catch. No client state to manage. |
+| **Hand-rolled SSE + `innerHTML`** | Reimplements htmx's swap, retry and reconnect; hand-written `innerHTML` destroys focus, which is the one thing an operator console cannot lose. |
+| **React / Next.js** | See above: costs the gate, the 111 tested Go UI tests, and the evidence chain, for capabilities §8 excludes. |
 
 ## 4. Design language
 
@@ -191,9 +265,11 @@ A signed-in operator, in a browser, can:
 
 1. reach `/` and be redirected to sign in when they have no session;
 2. create an environment and see it queued, with its cost forecast on screen before confirming;
-3. watch it progress through phases, each with a glyph and a word;
+3. watch it progress through phases, each with a glyph and a word, **updating in place without
+   a page reload, and continuing to update past the first swap**;
 4. see an uncertain phase with its reason and recovery line;
-5. abort it, with the abort control the first thing in the tab order;
+5. abort it, with the abort control the first thing in the tab order, **and with abort still
+   working when JavaScript is disabled**;
 6. destroy it and see teardown state;
 7. do all of it with the keyboard alone at 360px width and 200% zoom;
 
@@ -202,13 +278,21 @@ assertion that the served page carries the abort control and the current generat
 
 ## 10. Sequencing
 
-Three phases, each independently shippable and each leaving the product more usable:
+Four phases, each independently shippable and each leaving the product more usable:
 
 1. **Transport and identity** — session, sign-in, and one page served from `cmd/server`.
    Nothing else is worth building until a browser can reach an authenticated page.
 2. **Read surfaces** — overview, environments list, detail. The detail screen reuses the
-   renderer almost unchanged; this is where the existing 102 tests start paying for themselves.
-3. **Write surfaces** — create, abort, destroy, with CSRF and the admission forecast.
+   renderer almost unchanged; this is where the existing 111 UI tests (console 72,
+   consolerender 32, a11ygate 7) start paying for themselves.
+3. **Live updates** — htmx vendored via `go:embed`, the timeline region polling its own
+   fragment, the two-consecutive-swap regression test (§3a), and an `a11ygate` assertion over
+   the assembled page. Deliberately after the read surfaces: a static page that works is worth
+   more than a live one that does not, and the live path is where the focus and polling traps
+   live.
+4. **Write surfaces** — create, abort, destroy, with CSRF and the admission forecast. These
+   are plain forms with 303 redirects; htmx is not used on any of them, so they keep working
+   without JavaScript.
 
 Detailed tickets are written after the design language in §4–§6 is approved, so that ticket
 acceptance criteria can name concrete badges, glyphs and layouts rather than describing them
