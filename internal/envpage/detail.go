@@ -121,7 +121,6 @@ func BuildLifecycleResult(envID string, state console.ActionState, reason string
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, `<section class="lifecycle-result">`+"\n")
-	fmt.Fprintf(&b, `<h2>%s</h2>`+"\n", console.EscapeHTML(envID))
 	fmt.Fprintf(&b, `<p>%s</p>`+"\n", renderBadge(view.State))
 	fmt.Fprintf(&b, `<p class="reason">%s</p>`+"\n", console.EscapeHTML(view.Reason))
 	fmt.Fprintf(&b, `<p><a href="/env/%s">Back to the environment</a></p>`+"\n", console.EscapeHTML(envID))

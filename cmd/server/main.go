@@ -451,6 +451,7 @@ func listPage(store api.Environments, principalOf func(*http.Request) (contract.
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(doc))
 	})
 }
@@ -478,6 +479,7 @@ func overviewPage(store api.Environments, principalOf func(*http.Request) (contr
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(doc))
 	})
 }
@@ -507,6 +509,7 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 					return
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				setNoStore(w)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = w.Write([]byte(loginPlaceholderHTML))
 			case "/auth/callback":
@@ -679,6 +682,7 @@ func lifecycleAction(store *api.MemoryEnvironments, principalOf func(*http.Reque
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(doc))
 	})
 }
@@ -717,6 +721,7 @@ func destroyConfirm(store api.Environments, principalOf func(*http.Request) (con
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(doc))
 	})
 }
@@ -764,6 +769,7 @@ func createPage(transport *webui.Transport, reposOf func(*http.Request) ([]strin
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(doc))
 	})
 }
@@ -872,6 +878,7 @@ func refuseCreate(w http.ResponseWriter, state console.ActionState, reason strin
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setNoStore(w)
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte(doc))
 }
@@ -948,6 +955,7 @@ func environmentDetail(store api.Environments, principalOf func(*http.Request) (
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(doc))
 	})
@@ -1003,6 +1011,7 @@ func environmentTimeline(store api.Environments, principalOf func(*http.Request)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		_, _ = w.Write([]byte(fragment))
 	})
 }
@@ -1028,6 +1037,7 @@ sets the issuer, the client identifier and the callback URL.</p>
 func SessionPage() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setNoStore(w)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(placeholderHTML))
 	})
@@ -1222,4 +1232,15 @@ func newEnvironmentID(repo string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s-%x", name, buf), nil
+}
+
+// setNoStore applies the no-cache headers every authenticated HTML page carries.
+//
+// It lives here rather than in the renderer because the renderer produces
+// bytes, and headers are a transport concern; but the constants come from
+// consolerender so the rule and its enforcement cannot drift apart.
+func setNoStore(w http.ResponseWriter) {
+	for _, pair := range consolerender.PageHeaders() {
+		w.Header().Set(pair[0], pair[1])
+	}
 }

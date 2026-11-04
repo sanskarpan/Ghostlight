@@ -80,6 +80,15 @@ func TestTheGateEveryConsoleRouteIsServedAndAudited(t *testing.T) {
 			t.Errorf("%s: the page is a router miss", path)
 		}
 
+		// Not cached: an authenticated document left in a shared browser cache
+		// is readable by the next user of the machine, so every page carries
+		// no-store. This check exists because the e2e journey surfaced the
+		// missing header: the browser served a stale authenticated page after
+		// the session manager restarted.
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+			t.Errorf("%s: Cache-Control = %q, want no-store", path, cc)
+		}
+
 		// Audited: the served bytes pass the accessibility gate. The detail
 		// page's findings route is also audited, because a fragment is a served
 		// surface assembled into a page rather than an excuse.
