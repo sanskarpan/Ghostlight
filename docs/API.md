@@ -1,5 +1,23 @@
 # Platform API and events
 
+## 0. What is served today
+
+This document is the contract for the platform API. **Not every route in it is served yet**, and pretending otherwise would make the document a claim nobody can check. The table below is the reconciliation: a route is `served` only when the server answers it, and a route marked `specified` is designed and tested at the domain level but has no HTTP surface yet. A route that is neither served nor specified must not exist in this document at all.
+
+The route-reality test (`cmd/server/api_reality_test.go`) enforces this table against the live handler: a route marked `served` that stops answering fails the suite, and a route the server starts answering that is not marked `served` fails it too. The document and the binary cannot drift silently.
+
+| Route | State |
+|---|---|
+| `GET /v1/environments/{id}` | **served** |
+| `GET /v1/environments/{id}/review-threads` | **served** |
+| `POST /v1/environments/{id}/review-threads` | **served** |
+| `POST /v1/review-threads/{id}/findings` | **served** |
+| `POST /v1/review-threads/{id}/findings/{fid}/carry-forward` | **served** |
+| `GET /v1/passports/{id}` | **served** |
+| Every other `/v1` route in this document | **specified — not yet served** |
+
+The browser console has its own HTML surface (`/`, `/env`, `/env/{id}`, `/env/new` and the lifecycle routes), which is out of scope for this document: it is authenticated by session cookie rather than bearer token, and its contract is the console's, not the API's.
+
 ## 1. Common contract
 
 Authenticated `/v1` API with OIDC/team/repository grants. Mutations require Idempotency-Key and resource-version precondition. Derive actor and repository access server-side. Use opaque pagination and Problem Details with stable codes, request ID and safe retry guidance. Never return Terraform state, provider credentials, raw logs containing secrets or mutable image tags.
