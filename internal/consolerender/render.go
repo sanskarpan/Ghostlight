@@ -96,6 +96,17 @@ type Page struct {
 	// rendered when supplied, and its own view rules are applied before a byte
 	// is written.
 	Support *consolesupport.View
+	// LiveTimelinePath, when set, makes the timeline poll that path and swap
+	// itself. The fragment it fetches must be rendered by RenderTimelineLive so
+	// it carries the polling attributes and keeps polling.
+	//
+	// An empty path leaves the page static and loads no script at all, which is
+	// what every page that has nothing to update should do.
+	LiveTimelinePath string
+	// LiveTimelineEvery is the poll interval for a live timeline.
+	LiveTimelineEvery time.Duration
+	// ScriptPath is where the console serves its client script.
+	ScriptPath string
 	// Now is the moment admission expiry is judged against.
 	Now time.Time
 }
@@ -113,7 +124,16 @@ func RenderPage(p Page) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	timeline, err := RenderTimeline(p.Timeline)
+	var timeline string
+	if strings.TrimSpace(p.LiveTimelinePath) != "" {
+		every := p.LiveTimelineEvery
+		if every <= 0 {
+			every = 4 * time.Second
+		}
+		timeline, err = RenderTimelineLive(p.Timeline, p.LiveTimelinePath, every)
+	} else {
+		timeline, err = RenderTimeline(p.Timeline)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -168,7 +188,11 @@ func RenderPage(p Page) (string, error) {
 	if p.Log != "" {
 		body.WriteString(RenderLog(p.Log, p.LogCap))
 	}
-	return renderDocument(p.Title, body.String()), nil
+	script := ""
+	if strings.TrimSpace(p.LiveTimelinePath) != "" {
+		script = p.ScriptPath
+	}
+	return renderDocumentWithScript(p.Title, body.String(), script), nil
 }
 
 // ListPage is a page that lists things rather than describing one run.
@@ -242,6 +266,15 @@ func RenderListPage(p ListPage) (string, error) {
 // the viewport and the stylesheet cannot drift between screens. The body is
 // written between the main landmark's tags and is already escaped.
 func renderDocument(title, body string) string {
+	return renderDocumentWithScript(title, body, "")
+}
+
+// renderDocumentWithScript is renderDocument with an optional script source.
+//
+// The script is only added on pages that carry a live region. Loading htmx on a
+// page with nothing to swap would be dead weight on every static page, and a
+// script tag is a dependency a reader has to account for.
+func renderDocumentWithScript(title, body, script string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
 	b.WriteString(`<html lang="en">` + "\n")
@@ -265,6 +298,9 @@ func renderDocument(title, body string) string {
 	b.WriteString(`<main id="main" tabindex="-1">` + "\n")
 	b.WriteString(body)
 	b.WriteString("</main>\n")
+	if strings.TrimSpace(script) != "" {
+		fmt.Fprintf(&b, `<script src="%s" defer></script>`+"\n", console.EscapeHTML(script))
+	}
 	b.WriteString("</body>\n")
 	b.WriteString("</html>\n")
 	return b.String()
@@ -276,6 +312,41 @@ func renderDocument(title, body string) string {
 // reader should say so. Every row names the phase, its state as text and glyph,
 // and any reason the state is not self-explanatory. An uncertain phase is labelled
 // uncertain; there is no path from uncertain to complete.
+// RenderTimelineLive renders the timeline as an htmx-polled region.
+//
+// The attributes are emitted here, by the renderer, rather than patched in by a
+// caller: the fragment returned by the polling endpoint must carry them too, and
+// the only way to guarantee that is for both the page and the fragment to come
+// from the same function.
+//
+// The trap this closes was measured in a prototype: `hx-swap="outerHTML"`
+// replaces the element that carries `hx-get`, so unless the replacement carries
+// it again the first update silently stops every later one. The page went from
+// 4 complete phases to 6 and then froze. A test that observes one swap passes on
+// that broken implementation; only two consecutive swaps prove it.
+func RenderTimelineLive(t console.Timeline, path string, every time.Duration) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("%w: live timeline has no polling path", ErrInvalidModel)
+	}
+	if every <= 0 {
+		return "", fmt.Errorf("%w: live timeline has no poll interval", ErrInvalidModel)
+	}
+	plain, err := RenderTimeline(t)
+	if err != nil {
+		return "", err
+	}
+	// The plain renderer already escapes every field; this only adds attributes
+	// to the opening tag, so no value is re-inserted unescaped.
+	opening := `<section class="timeline" aria-labelledby="timeline-heading">`
+	live := fmt.Sprintf(
+		`<section class="timeline" aria-labelledby="timeline-heading" hx-get="%s" hx-trigger="every %s" hx-swap="outerHTML">`,
+		console.EscapeHTML(path), every.String())
+	if !strings.HasPrefix(plain, opening) {
+		return "", fmt.Errorf("%w: timeline markup changed shape; the live tag cannot be located", ErrInvalidModel)
+	}
+	return live + strings.TrimPrefix(plain, opening), nil
+}
+
 func RenderTimeline(t console.Timeline) (string, error) {
 	if err := t.Validate(); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidModel, err)

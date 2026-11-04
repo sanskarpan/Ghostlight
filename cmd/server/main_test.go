@@ -1076,3 +1076,92 @@ func TestOverviewAndListRequireASessionAndGet(t *testing.T) {
 		}
 	}
 }
+
+// The timeline fragment carries its own polling attributes, because it replaces
+// the element that carries them. Without this the first swap stops every later
+// one -- a trap measured in a prototype where the timeline advanced once and
+// then froze.
+func TestTimelineFragmentKeepsPollingItself(t *testing.T) {
+	mux, mgr, owner, outsider := environmentMux(t)
+	session, _, err := mgr.StartSession(owner, false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	fetch := func(principal string, path string) (int, string) {
+		s, _, err := mgr.StartSession(principal, false, time.Now())
+		if err != nil {
+			t.Fatalf("StartSession(%s): %v", principal, err)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: s.ID})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	code, body := fetch(owner, "/env/env-a-1/timeline")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.HasPrefix(body, `<section class="timeline"`) {
+		t.Errorf("the fragment must be the section it replaces, got %q", body[:min(60, len(body))])
+	}
+	for _, want := range []string{
+		`hx-get="/env/env-a-1/timeline"`,
+		`hx-swap="outerHTML"`,
+		`hx-trigger="every 4s"`,
+		`aria-labelledby="timeline-heading"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the fragment is missing %q; the second update would never happen", want)
+		}
+	}
+	// The fragment is not a document: it must not carry a doctype or a script,
+	// because it is swapped into an existing page rather than loaded.
+	if strings.Contains(body, "<!doctype") || strings.Contains(body, "<script") {
+		t.Error("a swapped fragment must not be a whole document")
+	}
+
+	// Another tenant's fragment is a 404, exactly as the page is.
+	code, body = fetch(outsider, "/env/env-a-1/timeline")
+	if code != http.StatusNotFound {
+		t.Errorf("outsider status = %d, want 404", code)
+	}
+	if strings.Contains(body, "never answered") {
+		t.Error("a refused fragment must not leak action detail")
+	}
+
+	// The fragment requires a session like every other console route.
+	req := httptest.NewRequest(http.MethodGet, "/env/env-a-1/timeline", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Errorf("unauthenticated fragment: status = %d, want 302", rec.Code)
+	}
+	_ = session
+}
+
+// The vendored script is served without a session, with an immutable cache
+// header, and with a nosniff type guard. It is public because the sign-in page
+// has to be able to load it.
+func TestVendoredAssetsAreServed(t *testing.T) {
+	mux, _, _, _ := environmentMux(t)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, webui.AssetPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 without a session", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/javascript") {
+		t.Errorf("content type = %q, want javascript", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("cache-control = %q, want immutable", cc)
+	}
+	if xc := rec.Header().Get("X-Content-Type-Options"); xc != "nosniff" {
+		t.Errorf("x-content-type-options = %q, want nosniff", xc)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("the script body is empty")
+	}
+}
