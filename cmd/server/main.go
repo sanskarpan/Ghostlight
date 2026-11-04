@@ -332,7 +332,12 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 		p, ok := principals[s.PrincipalID]
 		return p, ok
 	}
+	assets, err := webui.Assets()
+	if err != nil {
+		return nil, err
+	}
 	detail := transport.Require(environmentDetail(backend.Environments, principalOf))
+	timeline := transport.Require(environmentTimeline(backend.Environments, principalOf))
 	list := transport.Require(listPage(backend.Environments, principalOf))
 	overview := transport.Require(overviewPage(backend.Environments, principalOf))
 
@@ -341,7 +346,16 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 			backend.ServeHTTP(w, r)
 			return
 		}
+		// The script is served before the session check on purpose: it is a
+		// static, digest-verified public file, and requiring a session for it
+		// would mean the sign-in page could not load it either.
+		if r.URL.Path == webui.AssetPath {
+			assets.ServeHTTP(w, r)
+			return
+		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/timeline") && strings.HasPrefix(r.URL.Path, "/env/"):
+			timeline.ServeHTTP(w, r)
 		case strings.HasPrefix(r.URL.Path, "/env/"):
 			detail.ServeHTTP(w, r)
 		case r.URL.Path == "/env":
@@ -591,6 +605,9 @@ func environmentDetail(store api.Environments, principalOf func(*http.Request) (
 			http.Error(w, "cannot render this environment", http.StatusInternalServerError)
 			return
 		}
+		page.LiveTimelinePath = "/env/" + id + "/timeline"
+		page.LiveTimelineEvery = timelinePollInterval
+		page.ScriptPath = webui.AssetPath
 		doc, err := consolerender.RenderPage(page)
 		if err != nil {
 			log.Printf("environment page did not render: %v", err)
@@ -600,6 +617,60 @@ func environmentDetail(store api.Environments, principalOf func(*http.Request) (
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(doc))
+	})
+}
+
+// timelinePollInterval is how often a live timeline refreshes itself.
+//
+// Four seconds is a compromise a human can feel without the page becoming a
+// load source: a phase that changes is noticed within a breath, and an idle page
+// costs fifteen small requests a minute rather than sixty.
+const timelinePollInterval = 4 * time.Second
+
+// environmentTimeline serves the fragment the live region swaps into itself.
+//
+// It returns the whole timeline section, not an inner fragment, because the page
+// swaps with outerHTML. The renderer is the one that adds the polling attributes,
+// so the replacement keeps polling -- the trap a prototype measured, where the
+// first swap silently stopped every later one.
+//
+// Scope is checked exactly as the page's is, and a miss is 404: a fragment
+// endpoint is an endpoint, and it must not be a way to read an environment by id
+// that the page would refuse.
+func environmentTimeline(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/env/"), "/timeline")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		env, ok := store.Get(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		principal, ok := principalOf(r)
+		if !ok || !principal.Covers(env.Scope) {
+			http.NotFound(w, r)
+			return
+		}
+		page, err := envpage.Build(env, time.Now())
+		if err != nil {
+			http.Error(w, "cannot render this timeline", http.StatusInternalServerError)
+			return
+		}
+		fragment, err := consolerender.RenderTimelineLive(
+			page.Timeline, "/env/"+id+"/timeline", timelinePollInterval)
+		if err != nil {
+			http.Error(w, "cannot render this timeline", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(fragment))
 	})
 }
 
