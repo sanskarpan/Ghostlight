@@ -591,6 +591,10 @@ func TestHappyPathChart(t *testing.T) {
 func validScreen() Screen {
 	return Screen{
 		Title: "Run",
+		Regions: []Region{{
+			Name: "progress", Live: true, DeclaresCoverage: true,
+			Announces: "run status changed",
+		}},
 		Controls: []Control{
 			{Name: "review", AccessibleName: "Review the candidate", FocusOrder: 1, KeyboardReachable: true},
 			{Name: "abort", AccessibleName: "Abort the run", FocusOrder: 2, KeyboardReachable: true},
@@ -623,8 +627,14 @@ func TestScreenValidateRefusesAControlThatIsNotKeyboardReachable(t *testing.T) {
 	}
 }
 
-func TestScreenValidateRefusesAScreenWithoutAnAbortControl(t *testing.T) {
+// A screen with a live region must name an abort control, because a region that
+// updates on its own can cover or announce over the control that stops a burning
+// run, and doing so silently would pass every other check.
+func TestScreenValidateRefusesAScreenWithALiveRegionAndNoAbortControl(t *testing.T) {
 	screen := validScreen()
+	if !hasLiveRegion(screen) {
+		t.Fatal("the fixture must carry a live region for this test to mean anything")
+	}
 	screen.AbortControl = ""
 	if err := screen.Validate(); !errors.Is(err, ErrNoAbortControl) {
 		t.Errorf("Validate error = %v, want ErrNoAbortControl", err)
@@ -633,6 +643,32 @@ func TestScreenValidateRefusesAScreenWithoutAnAbortControl(t *testing.T) {
 	if err := screen.Validate(); !errors.Is(err, ErrNoAbortControl) {
 		t.Errorf("Validate error = %v, want ErrNoAbortControl for a control that does not exist", err)
 	}
+}
+
+// A screen with no live region may omit the abort control, because nothing on
+// it can obscure anything. Requiring one there would force a list page to
+// invent a button that aborts nothing, and a control that lies is worse than a
+// control that is absent.
+func TestScreenValidateAllowsNoAbortControlWithoutALiveRegion(t *testing.T) {
+	screen := validScreen()
+	for i := range screen.Regions {
+		screen.Regions[i].Live = false
+	}
+	screen.AbortControl = ""
+	if err := screen.Validate(); err != nil {
+		t.Errorf("Validate error = %v, want nil: a screened page with no live region has nothing to obscure", err)
+	}
+}
+
+// hasLiveRegion reports whether a screen carries one, so the tests above state
+// their own precondition.
+func hasLiveRegion(s Screen) bool {
+	for _, r := range s.Regions {
+		if r.Live {
+			return true
+		}
+	}
+	return false
 }
 
 func TestScreenValidateRefusesANegativeFocusOrder(t *testing.T) {

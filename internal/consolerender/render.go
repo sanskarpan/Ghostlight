@@ -171,6 +171,71 @@ func RenderPage(p Page) (string, error) {
 	return renderDocument(p.Title, body.String()), nil
 }
 
+// ListPage is a page that lists things rather than describing one run.
+//
+// It exists because RenderPage is a run-page renderer: it requires a timeline
+// and an action list, and a list of environments has neither. Forcing a list
+// through it would mean inventing five empty phases and an abort control that
+// aborts nothing, and a control that lies is worse than a control that is
+// absent. The page still shares the console's document shell, so the skip link,
+// the language, the viewport and the stylesheet cannot drift between screens.
+type ListPage struct {
+	// Title is the document title, required for the same reason Page.Title is.
+	Title string
+	// Screen carries the page's controls and regions.
+	Screen console.Screen
+	// Heading is the visible page heading above the content.
+	Heading string
+	// Summary is one short sentence under the heading, or empty.
+	Summary string
+	// Tables are the page's tables, in order.
+	Tables []console.Table
+	// Empty is what the page says when it has nothing to list. It is required
+	// when Tables is empty, because a blank area is indistinguishable from a
+	// failure to load.
+	Empty string
+	// Now is the page's notion of time.
+	Now time.Time
+}
+
+// RenderListPage renders a list page.
+//
+// It refuses an empty page with no statement: a page that would render as a
+// heading and nothing else is a page that looks broken, and the console refuses
+// to ship that.
+func RenderListPage(p ListPage) (string, error) {
+	if strings.TrimSpace(p.Title) == "" {
+		return "", fmt.Errorf("%w: page has no title", ErrInvalidModel)
+	}
+	screen, err := RenderScreen(p.Screen)
+	if err != nil {
+		return "", err
+	}
+	if len(p.Tables) == 0 && strings.TrimSpace(p.Empty) == "" {
+		return "", fmt.Errorf("%w: list page %q lists nothing and says nothing", ErrInvalidModel, p.Title)
+	}
+
+	var body strings.Builder
+	body.WriteString(screen)
+	if heading := strings.TrimSpace(p.Heading); heading != "" {
+		fmt.Fprintf(&body, "<h2>%s</h2>\n", console.EscapeHTML(heading))
+	}
+	if summary := strings.TrimSpace(p.Summary); summary != "" {
+		fmt.Fprintf(&body, `<p class="summary">%s</p>`+"\n", console.EscapeHTML(summary))
+	}
+	if len(p.Tables) == 0 {
+		fmt.Fprintf(&body, `<p class="empty">%s</p>`+"\n", console.EscapeHTML(p.Empty))
+	}
+	for _, table := range p.Tables {
+		rendered, err := RenderTable(table)
+		if err != nil {
+			return "", err
+		}
+		body.WriteString(rendered)
+	}
+	return renderDocument(p.Title, body.String()), nil
+}
+
 // renderDocument wraps a page body in the console's document shell.
 //
 // The shell is shared by every console page so that the skip link, the language,
@@ -388,22 +453,27 @@ func RenderScreen(s console.Screen) (string, error) {
 	if title := strings.TrimSpace(s.Title); title != "" {
 		fmt.Fprintf(&b, "<h2>%s</h2>\n", console.EscapeHTML(title))
 	}
-	b.WriteString(`<section class="controls" aria-labelledby="controls-heading">` + "\n")
-	b.WriteString(`<h3 id="controls-heading">Controls</h3>` + "\n")
-	b.WriteString("<ul>\n")
-	for _, control := range controls {
-		class := "control"
-		abort := ""
-		if control.Name == s.AbortControl {
-			class = "control abort"
-			abort = ` data-abort="true"`
+	// A screen with no controls renders no controls section. An empty list under
+	// a "Controls" heading reads as "the controls failed to load", which is a
+	// worse lie than saying nothing: there is nothing to say.
+	if len(controls) > 0 {
+		b.WriteString(`<section class="controls" aria-labelledby="controls-heading">` + "\n")
+		b.WriteString(`<h3 id="controls-heading">Controls</h3>` + "\n")
+		b.WriteString("<ul>\n")
+		for _, control := range controls {
+			class := "control"
+			abort := ""
+			if control.Name == s.AbortControl {
+				class = "control abort"
+				abort = ` data-abort="true"`
+			}
+			fmt.Fprintf(&b, `<li><button type="button" class="%s"%s data-control="%s" data-focus-order="%d">%s</button></li>`+"\n",
+				class, abort, console.EscapeHTML(control.Name), control.FocusOrder,
+				console.EscapeHTML(control.AccessibleName))
 		}
-		fmt.Fprintf(&b, `<li><button type="button" class="%s"%s data-control="%s" data-focus-order="%d">%s</button></li>`+"\n",
-			class, abort, console.EscapeHTML(control.Name), control.FocusOrder,
-			console.EscapeHTML(control.AccessibleName))
+		b.WriteString("</ul>\n")
+		b.WriteString("</section>\n")
 	}
-	b.WriteString("</ul>\n")
-	b.WriteString("</section>\n")
 	for i, region := range s.Regions {
 		b.WriteString(`<section class="region"`)
 		if region.Name != "" {

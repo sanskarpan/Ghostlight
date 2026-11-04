@@ -915,10 +915,29 @@ func (s Screen) Validate() error {
 		seen[c.FocusOrder] = c.Name
 	}
 
-	if strings.TrimSpace(s.AbortControl) == "" {
-		return fmt.Errorf("%w: screen %q", ErrNoAbortControl, s.Title)
+	// An abort control is required exactly when there is a live region to
+	// obscure it.
+	//
+	// The rule exists because a region that updates on its own can cover or
+	// announce over the control that stops a burning run, and a region doing
+	// that silently would pass every other check. On a screen with no live
+	// region there is nothing that can obscure anything, and requiring an abort
+	// control there would force a list page to invent a button that aborts
+	// nothing -- a control that lies is worse than a control that is absent.
+	// The requirement therefore follows the hazard: add a live region and the
+	// abort control becomes mandatory again.
+	hasLiveRegion := false
+	for _, r := range s.Regions {
+		if r.Live {
+			hasLiveRegion = true
+			break
+		}
 	}
-	if _, ok := s.control(s.AbortControl); !ok {
+	if strings.TrimSpace(s.AbortControl) == "" {
+		if hasLiveRegion {
+			return fmt.Errorf("%w: screen %q has a live region and must name one", ErrNoAbortControl, s.Title)
+		}
+	} else if _, ok := s.control(s.AbortControl); !ok {
 		return fmt.Errorf("%w: screen %q names %q, which is not a control", ErrNoAbortControl, s.Title, s.AbortControl)
 	}
 

@@ -333,18 +333,98 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 		return p, ok
 	}
 	detail := transport.Require(environmentDetail(backend.Environments, principalOf))
+	list := transport.Require(listPage(backend.Environments, principalOf))
+	overview := transport.Require(overviewPage(backend.Environments, principalOf))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1" {
 			backend.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/env/") {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/env/"):
 			detail.ServeHTTP(w, r)
+		case r.URL.Path == "/env":
+			list.ServeHTTP(w, r)
+		case r.URL.Path == "/":
+			overview.ServeHTTP(w, r)
+		default:
+			session.ServeHTTP(w, r)
+		}
+	}), nil
+}
+
+// scopedEnvironments returns the environments a principal may see, and whether
+// the principal resolved at all.
+//
+// The filter runs here, before any page is built, so a list builder never
+// receives a set it could widen.
+func scopedEnvironments(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool), r *http.Request) ([]api.Environment, bool) {
+	principal, ok := principalOf(r)
+	if !ok {
+		return nil, false
+	}
+	var out []api.Environment
+	for _, env := range store.All() {
+		if principal.Covers(env.Scope) {
+			out = append(out, env)
+		}
+	}
+	return out, true
+}
+
+// listPage serves GET /env.
+func listPage(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		session.ServeHTTP(w, r)
-	}), nil
+		envs, ok := scopedEnvironments(store, principalOf, r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		page, err := envpage.BuildList(envs, time.Now())
+		if err != nil {
+			http.Error(w, "cannot render the list", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderListPage(page)
+		if err != nil {
+			http.Error(w, "cannot render the list", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(doc))
+	})
+}
+
+// overviewPage serves GET /.
+func overviewPage(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		envs, ok := scopedEnvironments(store, principalOf, r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		page, err := envpage.BuildOverview(envs, time.Now())
+		if err != nil {
+			http.Error(w, "cannot render the overview", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderListPage(page)
+		if err != nil {
+			http.Error(w, "cannot render the overview", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(doc))
+	})
 }
 
 // signIn builds the /login and /auth/callback routes.

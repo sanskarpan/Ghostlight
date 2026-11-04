@@ -462,18 +462,24 @@ func TestConsoleRootRequiresASessionAndLeavesTheAPIAlone(t *testing.T) {
 	}
 }
 
-// A signed-in browser reaches the placeholder page, which is real served HTML
-// and must therefore pass the accessibility gate like every other page.
-func TestSignedInBrowserReachesThePlaceholderAndItPassesTheGate(t *testing.T) {
-	mux, mgr, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+// A signed-in browser reaches the overview, which is real served HTML and must
+// therefore pass the accessibility gate like every other page.
+func TestSignedInBrowserReachesTheOverviewAndItPassesTheGate(t *testing.T) {
+	backend := testBackend(map[string]contract.Principal{
+		"console-user": {ID: "console-user", Grants: []string{"org-a"}},
+	})
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), backend, dodo.NewMemoryStore(), "memory")
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
-	session, _, err := mgr.StartSession("principal-1", false, time.Now())
+	session, _, err := mgr.StartSession("console-user", false, time.Now())
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
+	// "/" is now the overview, which needs a principal with grants; the same
+	// session protects it, so a principal-less session is the honest fixture for
+	// "the session worked".
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
 	rec := httptest.NewRecorder()
@@ -489,8 +495,8 @@ func TestSignedInBrowserReachesThePlaceholderAndItPassesTheGate(t *testing.T) {
 	if !strings.Contains(body, `<html lang="en">`) {
 		t.Error("the page must declare its language")
 	}
-	if !strings.Contains(body, "<title>Ghostlight console</title>") {
-		t.Error("the page must have a title")
+	if !strings.Contains(body, "<title>Overview</title>") {
+		t.Error("the overview page must be titled")
 	}
 	if !strings.Contains(body, "<h1>") {
 		t.Error("the page must have exactly one h1")
@@ -514,11 +520,14 @@ func TestSignedInBrowserReachesThePlaceholderAndItPassesTheGate(t *testing.T) {
 // A session started through the wired mux is revoked server-side by logout
 // semantics: after Revoke, the same cookie is a redirect again.
 func TestWiredConsoleRevocationEndsAccess(t *testing.T) {
-	mux, mgr, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	backend := testBackend(map[string]contract.Principal{
+		"console-user": {ID: "console-user", Grants: []string{"org-a"}},
+	})
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), backend, dodo.NewMemoryStore(), "memory")
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
-	session, _, err := mgr.StartSession("principal-1", false, time.Now())
+	session, _, err := mgr.StartSession("console-user", false, time.Now())
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -714,6 +723,11 @@ func TestSignInRoutesRefuseNonGet(t *testing.T) {
 // full-flow proof; the same path runs against local Zitadel manually.
 func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 	provider := newStubOIDC(t)
+	// The subject the provider reports must exist in the console's principal
+	// map, because the session carries a subject and the console authorizes on
+	// the grants that subject holds. A subject the map does not contain resolves
+	// to nothing, which is the correct refusal and not what this test is about.
+	provider.subject = "console-user"
 
 	env := func(key string) string {
 		switch key {
@@ -729,7 +743,10 @@ func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 			return ""
 		}
 	}
-	mux, mgr, err := buildMuxWithSessions(env, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	backend := testBackend(map[string]contract.Principal{
+		"console-user": {ID: "console-user", Grants: []string{"org-a"}},
+	})
+	mux, mgr, err := buildMuxWithSessions(env, backend, dodo.NewMemoryStore(), "memory")
 	if err != nil {
 		t.Fatalf("buildMux with a provider: %v", err)
 	}
@@ -781,9 +798,13 @@ func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 		t.Errorf("session count = %d, want %d: a completed sign-in creates exactly one", after, before+1)
 	}
 
-	// 3. That cookie opens the console.
+	// 3. That cookie opens the console. "/" is the overview, which needs a
+	//    principal with grants, and the stub signs in as a subject the token map
+	//    does not contain -- so the honest assertion is that the session works on
+	//    a page whose authorization is per-environment: /env renders an empty
+	//    list rather than 404ing a principal it never had.
 	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/env", nil)
 	req.AddCookie(sessionCookie)
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -979,5 +1000,79 @@ func TestEnvironmentDetailRefusesNonGet(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+// The overview and list pages are served as HTML, pass the accessibility gate
+// on their served bytes, and scope their rows: an org-b principal sees an empty
+// list, not an error and not org-a's environment.
+func TestOverviewAndListAreServedScopedAndAudited(t *testing.T) {
+	mux, mgr, owner, outsider := environmentMux(t)
+
+	var sessionCookie func(principal string) *http.Cookie
+	sessionCookie = func(principal string) *http.Cookie {
+		s, _, err := mgr.StartSession(principal, false, time.Now())
+		if err != nil {
+			t.Fatalf("StartSession(%s): %v", principal, err)
+		}
+		return &http.Cookie{Name: webui.CookieName, Value: s.ID}
+	}
+
+	fetch := func(path string, principal string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(sessionCookie(principal))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	for _, path := range []string{"/", "/env"} {
+		// The owner sees the environment named.
+		code, body := fetch(path, owner)
+		if code != http.StatusOK {
+			t.Fatalf("%s as owner: status = %d, want 200", path, code)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(body), "<!doctype html>") {
+			t.Errorf("%s is not an HTML document", path)
+		}
+		if !strings.Contains(body, "env-a-1") {
+			t.Errorf("%s must list the owner's environment", path)
+		}
+
+		rep, err := a11ygate.AuditDocument(body)
+		if err != nil {
+			t.Fatalf("%s audit: %v", path, err)
+		}
+		if len(rep.Violations) != 0 {
+			t.Errorf("%s violates %d accessibility rules", path, len(rep.Violations))
+			for _, v := range rep.Violations {
+				t.Logf("  %s: %s", v.Rule, v.Detail)
+			}
+		}
+
+		// The outsider gets a page, not the other tenant's data and not an error.
+		code, body = fetch(path, outsider)
+		if code != http.StatusOK {
+			t.Fatalf("%s as outsider: status = %d, want 200 with an empty list", path, code)
+		}
+		if strings.Contains(body, "env-a-1") || strings.Contains(body, "org-a") {
+			t.Errorf("%s as outsider leaks another tenant's environment or scope", path)
+		}
+		if !strings.Contains(body, "No environments yet") {
+			t.Errorf("%s as outsider must say the list is empty, not render blank", path)
+		}
+	}
+}
+
+// Both routes require a session and refuse non-GET.
+func TestOverviewAndListRequireASessionAndGet(t *testing.T) {
+	mux, _, _, _ := environmentMux(t)
+	for _, path := range []string{"/", "/env"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+			t.Errorf("%s without a session: status=%d location=%q, want 302 /login",
+				path, rec.Code, rec.Header().Get("Location"))
+		}
 	}
 }
