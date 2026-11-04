@@ -104,3 +104,38 @@ one `start-from-init` service and mounts **no** init scripts.
 
 - `docker-compose.yml` — db + zitadel (`start-from-init`), pinned image
   `ghcr.io/zitadel/zitadel:v4.20.0`, data in named volume `zitadel-db-data`.
+
+## Registering the console as an OIDC client
+
+The console's sign-in (`FE-2`, `internal/webui/oidc.go`) needs an application
+registered in this instance. It is a one-time step in the console, done as the
+human admin — a machine user cannot create it without project membership, and
+granting that membership to a dev PAT would widen a credential that exists only
+to read.
+
+1. Sign in at `http://localhost:8080` as `admin@ghostlight.localhost`.
+2. Project (or create one, e.g. `ghostlight`) → **New application** → type
+   **Web**, name `ghostlight-console`.
+3. Authentication method: **PKCE** (the flow always sends S256; a client
+   configured without PKCE will refuse the exchange).
+4. Redirect URI: **`http://localhost:8080/auth/callback`** — exact match, no
+   trailing slash. The flow's redirect URI must equal this byte for byte.
+5. After creating it, Zitadel shows the **Client ID**. That and the issuer are
+   the two required values.
+
+Then start the server with:
+
+```powershell
+$env:GHOSTLIGHT_WEBUI_KEY = "64 hex characters (32 bytes)"
+$env:ZITADEL_ISSUER      = "http://localhost:8080"
+$env:ZITADEL_CLIENT_ID   = "<the client id from step 5>"
+$env:ZITADEL_REDIRECT_URI = "http://localhost:8080/auth/callback"
+go run ./cmd/server
+```
+
+`ZITADEL_CLIENT_SECRET` is optional: a PKCE web app does not need one, and
+leaving it unset is the correct configuration for this client type.
+
+With those unset, `/login` serves an explanation page with `503` rather than a
+broken form — the console still runs, it just cannot sign anyone in. That is
+deliberate: a missing provider and a broken provider are different states.
