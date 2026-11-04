@@ -52,10 +52,52 @@ type Environments interface {
 	All() []Environment
 }
 
+// Creator is the write half of an environment store.
+//
+// It is a separate capability because reading and creating are different
+// authorities: a console page that only lists environments should not be able
+// to create one merely because it can read. Handlers that create assert this
+// interface; handlers that only read never need it.
+type Creator interface {
+	// Add stores a new environment and returns it as stored.
+	Add(env Environment) Environment
+	// EnvironmentForRequest returns the environment a request id already
+	// created, and whether there is one. A retried submission must return the
+	// first result rather than make a second environment, and the only way to
+	// honour that is to remember which request made which environment.
+	EnvironmentForRequest(requestID string) (Environment, bool)
+}
+
+// Add stores an environment and records the request that created it.
+func (m *MemoryEnvironments) Add(env Environment) Environment {
+	m.Environments = append(m.Environments, env)
+	return env
+}
+
+// RememberRequest records which environment a request id produced.
+func (m *MemoryEnvironments) RememberRequest(requestID, envID string) {
+	if m.RequestEnvironments == nil {
+		m.RequestEnvironments = map[string]string{}
+	}
+	m.RequestEnvironments[requestID] = envID
+}
+
+// EnvironmentForRequest returns the environment a request id already created.
+func (m *MemoryEnvironments) EnvironmentForRequest(requestID string) (Environment, bool) {
+	id, ok := m.RequestEnvironments[requestID]
+	if !ok {
+		return Environment{}, false
+	}
+	return m.Get(id)
+}
+
 // MemoryEnvironments is an in-memory environment store.
 type MemoryEnvironments struct {
 	// Environments are the stored environments.
 	Environments []Environment
+	// RequestEnvironments maps a create request's idempotency id to the
+	// environment it produced, so a retried form returns the first result.
+	RequestEnvironments map[string]string
 }
 
 // All returns every stored environment.

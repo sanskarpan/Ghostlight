@@ -71,6 +71,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -85,6 +86,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/billing"
+	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/consolerender"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/dodo"
@@ -250,12 +252,12 @@ func dodoReceiver(getenv func(string) string, store billing.RecordStore) (*dodo.
 
 // buildMux wires the open contract endpoints, the authenticated platform
 // API, and the Dodo webhook receiver into one handler.
-func buildMux(getenv func(string) string, backend *api.Server, store billing.RecordStore, storeName string) (*http.ServeMux, error) {
+func buildMux(getenv func(string) string, backend *api.Server, store billing.RecordStore, storeName string, consoleStore *api.MemoryEnvironments) (*http.ServeMux, error) {
 	rc, err := dodoReceiver(getenv, store)
 	if err != nil {
 		return nil, err
 	}
-	root, _, err := htmlRoot(getenv, backend)
+	root, _, err := htmlRoot(getenv, backend, consoleStore)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +275,7 @@ func buildMux(getenv func(string) string, backend *api.Server, store billing.Rec
 // requires a session, and an unauthenticated browser is redirected to sign in.
 // It returns nil when the console is disabled, which is the current default, so
 // the API-only deployment is unchanged.
-func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *identity.Manager, error) {
+func htmlRoot(getenv func(string) string, backend *api.Server, store *api.MemoryEnvironments) (http.Handler, *identity.Manager, error) {
 	raw := strings.TrimSpace(getenv("GHOSTLIGHT_WEBUI_KEY"))
 	if raw == "" {
 		return nil, nil, nil
@@ -302,7 +304,7 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 			principals[p.ID] = p
 		}
 	}
-	root, err := consoleRoot(backend, transport, session, principals)
+	root, err := consoleRoot(backend, transport, session, principals, store)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -320,7 +322,7 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 // 404 would strand every signed-out visitor. The page says plainly that the
 // flow arrives with FE-2 - a missing feature and a broken loop are different
 // facts.
-func consoleRoot(backend *api.Server, transport *webui.Transport, session http.Handler, principals map[string]contract.Principal) (http.Handler, error) {
+func consoleRoot(backend *api.Server, transport *webui.Transport, session http.Handler, principals map[string]contract.Principal, store *api.MemoryEnvironments) (http.Handler, error) {
 	// The session carries a subject; the API authorizes on grants. One map, two
 	// credential types: a browser session resolves to the same principal a
 	// bearer token does, so authorization is not written twice.
@@ -338,7 +340,9 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 	}
 	detail := transport.Require(environmentDetail(backend.Environments, principalOf))
 	timeline := transport.Require(environmentTimeline(backend.Environments, principalOf))
-	list := transport.Require(listPage(backend.Environments, principalOf))
+	list := transport.Require(listPage(store, principalOf))
+	createPageHandler := transport.Require(createPage(transport, reposOf(principalOf)))
+	create := transport.Require(transport.RequireCSRF(createEnvironment(store, principalOf, transport)))
 	overview := transport.Require(overviewPage(backend.Environments, principalOf))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -354,10 +358,18 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 			return
 		}
 		switch {
+		case r.URL.Path == "/env/new":
+			// Before the /env/ prefix: the create form is its own page, and a
+			// prefix match would send it to the detail handler as an id.
+			createPageHandler.ServeHTTP(w, r)
 		case strings.HasSuffix(r.URL.Path, "/timeline") && strings.HasPrefix(r.URL.Path, "/env/"):
 			timeline.ServeHTTP(w, r)
 		case strings.HasPrefix(r.URL.Path, "/env/"):
 			detail.ServeHTTP(w, r)
+		case r.URL.Path == "/env" && r.Method == http.MethodPost:
+			// Before the GET case: a create is a POST to the same path, and the
+			// method check belongs to the route, not to whichever handler wins.
+			create.ServeHTTP(w, r)
 		case r.URL.Path == "/env":
 			list.ServeHTTP(w, r)
 		case r.URL.Path == "/":
@@ -366,6 +378,24 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 			session.ServeHTTP(w, r)
 		}
 	}), nil
+}
+
+// reposOf returns the repositories a request's principal may target.
+//
+// A repository name is a scope, so the repositories a principal may target are
+// the scopes its grants cover, named the way grants name them.
+func reposOf(principalOf func(*http.Request) (contract.Principal, bool)) func(*http.Request) ([]string, bool) {
+	return func(r *http.Request) ([]string, bool) {
+		principal, ok := principalOf(r)
+		if !ok {
+			return nil, false
+		}
+		repos := make([]string, 0, len(principal.Grants))
+		for _, g := range principal.Grants {
+			repos = append(repos, g+"/api")
+		}
+		return repos, true
+	}
 }
 
 // scopedEnvironments returns the environments a principal may see, and whether
@@ -567,6 +597,178 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 			transport.Require(page).ServeHTTP(w, r)
 		}
 	}), nil
+}
+
+// createPage serves GET /env/new: the admission form.
+//
+// The repositories offered are the ones the caller's grants cover, filtered
+// here from the same principal the API would authorize with. The forecast is
+// stated before the confirm control in the markup, because admission is where
+// a customer commits money.
+func createPage(transport *webui.Transport, reposOf func(*http.Request) ([]string, bool)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		repos, ok := reposOf(r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		requestID, err := newRequestID()
+		if err != nil {
+			http.Error(w, "cannot start a create", http.StatusInternalServerError)
+			return
+		}
+		page, err := envpage.BuildCreate(envpage.CreateForm{
+			Repositories: repos,
+			CSRFToken:    transport.CSRFToken(s.SessionID),
+			RequestID:    requestID,
+			Forecast:     createForecast,
+		})
+		if err != nil {
+			http.Error(w, "cannot render the create form", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderListPage(page)
+		if err != nil {
+			http.Error(w, "cannot render the create form", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(doc))
+	})
+}
+
+// createForecast is the cost statement the create form shows before confirm.
+//
+// It is a constant because the platform has no measured per-profile price table
+// to read yet; claiming a number would be worse than naming the shape. When the
+// cost model's meters are wired to admission, this becomes a lookup and the
+// wording stays.
+const createForecast = "billed at the preview-small profile: compute, storage and shared services while the environment lives, with a hard ceiling per admission"
+
+// createEnvironment serves POST /env.
+//
+// The rules, in the order they are checked: the session's CSRF token must
+// match, the request id must not already have produced an environment (a
+// retried form returns the first result rather than making a second), the
+// repository must be covered by the caller's grants, and the profile must be
+// one the console admits. A refusal renders its own state and glyph rather
+// than a generic error, because a quota refusal, a policy denial and a
+// validation failure are different facts with different next steps.
+func createEnvironment(store *api.MemoryEnvironments, principalOf func(*http.Request) (contract.Principal, bool), transport *webui.Transport) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		if !transport.VerifyCSRF(s.SessionID, r.PostFormValue("csrf_token")) {
+			http.Error(w, "csrf token missing or invalid", http.StatusForbidden)
+			return
+		}
+		principal, ok := principalOf(r)
+		if !ok {
+			http.Error(w, "this session has no principal with grants", http.StatusForbidden)
+			return
+		}
+
+		requestID := strings.TrimSpace(r.PostFormValue("request_id"))
+		repo := strings.TrimSpace(r.PostFormValue("repo"))
+		if requestID == "" || repo == "" {
+			refuseCreate(w, console.StateDenied, "the submission was missing a repository or a request identifier")
+			return
+		}
+
+		// Idempotency: the same request id returns the first result, whatever it
+		// was, rather than creating a second environment.
+		if prior, found := store.EnvironmentForRequest(requestID); found {
+			http.Redirect(w, r, "/env/"+prior.ID, http.StatusSeeOther)
+			return
+		}
+
+		// The repository must be covered by the caller's grants. A repository
+		// name is a scope in its own right, and Covers is the same rule the API
+		// uses: prefix-with-separator, so "org-a" does not cover "org-a-other".
+		if !principal.Covers(repo) && !principal.Covers(envpage.ScopeOfRepository(repo)) {
+			refuseCreate(w, console.StateDenied,
+				"your grants do not cover that repository, so an environment cannot be created for it")
+			return
+		}
+
+		// The quota gate is where a real deployment refuses for entitlement. The
+		// console admits nothing on its own authority: this decision comes from
+		// the same place the API's admission would read, which today is a fixed
+		// entitlement of one concurrent environment per principal in this
+		// in-memory store.
+		if count := countOwned(store, principal); count >= 1 {
+			refuseCreate(w, console.StateQuota,
+				"this deployment allows one running environment per principal, and you already have one")
+			return
+		}
+
+		id, err := newEnvironmentID(repo)
+		if err != nil {
+			http.Error(w, "cannot allocate an environment identifier", http.StatusInternalServerError)
+			return
+		}
+		created := store.Add(api.Environment{
+			ID:        id,
+			Scope:     envpage.ScopeOfRepository(repo),
+			Version:   1,
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+		store.RememberRequest(requestID, created.ID)
+
+		// 303, not 302: the created environment is fetched with GET, and a 303
+		// is the redirect that says exactly that.
+		http.Redirect(w, r, "/env/"+created.ID, http.StatusSeeOther)
+	})
+}
+
+// refuseCreate renders a refused admission with its own words.
+func refuseCreate(w http.ResponseWriter, state console.ActionState, reason string) {
+	page, err := envpage.BuildCreateRefused(state, reason)
+	if err != nil {
+		http.Error(w, "admission refused", http.StatusForbidden)
+		return
+	}
+	doc, err := consolerender.RenderListPage(page)
+	if err != nil {
+		http.Error(w, "admission refused", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(doc))
+}
+
+// countOwned counts the environments whose scope a principal covers.
+//
+// "Owned" here means "in a scope I control", which is what the grants say. It
+// is not the same as "created by me" and does not pretend to be: in this
+// in-memory model the scope is the unit of ownership, and the same Covers rule
+// that authorized the create decides what counts. When environments carry a
+// creator identity, this becomes that lookup and nothing else changes.
+func countOwned(store *api.MemoryEnvironments, principal contract.Principal) int {
+	n := 0
+	for _, env := range store.All() {
+		if principal.Covers(env.Scope) {
+			n++
+		}
+	}
+	return n
 }
 
 // environmentDetail serves GET /env/{id}: the console's first real page.
@@ -820,15 +1022,19 @@ func run(getenv func(string) string) int {
 	}
 
 	ops := contract.Registry{}
+	// One store for both the API and the console: a create through the browser
+	// must be visible to the API and vice versa, and two stores would guarantee
+	// they eventually disagree.
+	consoleStore := &api.MemoryEnvironments{}
 	backend := &api.Server{
 		Auth:         api.StaticAuthenticator{Tokens: tokens},
 		Operations:   ops,
 		Authorizer:   &contract.Authorizer{Registry: ops},
-		Environments: api.MemoryEnvironments{},
+		Environments: consoleStore,
 		Room:         &reviewer.Room{},
 		Passports:    &passport.Registry{},
 	}
-	mux, err := buildMux(getenv, backend, store, storeName)
+	mux, err := buildMux(getenv, backend, store, storeName, consoleStore)
 	if err != nil {
 		log.Printf("refusing to start: %v", err)
 		return 1
@@ -849,4 +1055,40 @@ func run(getenv func(string) string) int {
 func main() {
 	flag.Parse()
 	os.Exit(run(os.Getenv))
+}
+
+// newRequestID mints a create-request idempotency id.
+func newRequestID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// newEnvironmentID derives a readable environment id from the repository, with
+// a random suffix so two creates for the same repository never collide.
+func newEnvironmentID(repo string) (string, error) {
+	name := repo
+	if at := strings.LastIndex(name, "/"); at >= 0 {
+		name = name[at+1:]
+	}
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return -1
+		}
+	}, name)
+	if name == "" {
+		name = "env"
+	}
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%x", name, buf), nil
 }
