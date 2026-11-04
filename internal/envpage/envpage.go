@@ -144,3 +144,14 @@ func label(p console.Phase) string {
 	}
 	return string(p)
 }
+
+// ScopeOfRepository returns the scope a repository belongs to.
+//
+// A repository name is itself a scope, in the same "kind:name" shape the grants
+// use, so a grant of "org-a" covers the repository "org-a/api" by the
+// prefix-with-separator rule the contract defines. This function exists so the
+// create path and the authorization path share one idea of what a repository's
+// scope is.
+func ScopeOfRepository(repo string) string {
+	return strings.TrimSpace(repo)
+}

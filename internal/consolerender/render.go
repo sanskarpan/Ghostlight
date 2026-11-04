@@ -218,6 +218,14 @@ type ListPage struct {
 	// when Tables is empty, because a blank area is indistinguishable from a
 	// failure to load.
 	Empty string
+	// RawHTML is trusted markup rendered verbatim after the screen.
+	//
+	// It exists for pages whose body is a form, which the console has no model
+	// for and should not grow one for: a form is a caller concern. The rule for
+	// using it is the renderer's own rule — the caller escapes every value it
+	// interpolates, and this field must never receive a string containing
+	// user-supplied text that has not already been through EscapeHTML.
+	RawHTML string
 	// Now is the page's notion of time.
 	Now time.Time
 }
@@ -235,7 +243,7 @@ func RenderListPage(p ListPage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(p.Tables) == 0 && strings.TrimSpace(p.Empty) == "" {
+	if len(p.Tables) == 0 && strings.TrimSpace(p.Empty) == "" && strings.TrimSpace(p.RawHTML) == "" {
 		return "", fmt.Errorf("%w: list page %q lists nothing and says nothing", ErrInvalidModel, p.Title)
 	}
 
@@ -257,6 +265,7 @@ func RenderListPage(p ListPage) (string, error) {
 		}
 		body.WriteString(rendered)
 	}
+	body.WriteString(p.RawHTML)
 	return renderDocument(p.Title, body.String()), nil
 }
 

@@ -254,7 +254,7 @@ func postHook(t *testing.T, mux *http.ServeMux, secret, id, typ, business, data 
 }
 
 func TestDodoRouteIsMountedAndVerified(t *testing.T) {
-	mux, err := buildMux(dodoEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	mux, err := buildMux(dodoEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{})
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestDodoRouteIsMountedAndVerified(t *testing.T) {
 }
 
 func TestDodoRouteUnconfiguredRefusesEveryDelivery(t *testing.T) {
-	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{})
 	if err != nil {
 		t.Fatalf("buildMux without secrets: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestDodoRouteBadProductMapRefusesStartup(t *testing.T) {
 		}
 		return ""
 	}
-	if _, err := buildMux(getenv, testBackend(nil), dodo.NewMemoryStore(), "memory"); err == nil {
+	if _, err := buildMux(getenv, testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{}); err == nil {
 		t.Error("malformed product map: expected a refusal, got success")
 	}
 	if code := run(func(key string) string {
@@ -410,7 +410,7 @@ func webuiEnv() func(string) string {
 // Without a signing key the console is not mounted at all, so an existing
 // API-only deployment keeps behaving exactly as it did: JSON everywhere.
 func TestConsoleUnmountedWithoutAKey(t *testing.T) {
-	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	mux, err := buildMux(func(string) string { return "" }, testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{})
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestConsoleWithABadKeyRefusesStartup(t *testing.T) {
 			}
 			return ""
 		}
-		if _, err := buildMux(env, testBackend(nil), dodo.NewMemoryStore(), "memory"); err == nil {
+		if _, err := buildMux(env, testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{}); err == nil {
 			t.Errorf("key %q must refuse startup", bad)
 		}
 	}
@@ -441,7 +441,7 @@ func TestConsoleWithABadKeyRefusesStartup(t *testing.T) {
 // redirected to sign in while the JSON API on /v1 stays bearer-authenticated
 // with its own 401 semantics.
 func TestConsoleRootRequiresASessionAndLeavesTheAPIAlone(t *testing.T) {
-	mux, err := buildMux(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	mux, err := buildMux(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory", &api.MemoryEnvironments{})
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -554,6 +554,13 @@ func TestWiredConsoleRevocationEndsAccess(t *testing.T) {
 // session manager the mux actually uses, so tests start sessions on the same
 // store the transport verifies against rather than on a parallel one.
 func buildMuxWithSessions(getenv func(string) string, backend *api.Server, store billing.RecordStore, storeName string) (*http.ServeMux, *identity.Manager, error) {
+	return buildMuxWithStore(getenv, backend, store, storeName, &api.MemoryEnvironments{})
+}
+
+func buildMuxWithStore(getenv func(string) string, backend *api.Server, store billing.RecordStore, storeName string, consoleStore *api.MemoryEnvironments) (*http.ServeMux, *identity.Manager, error) {
+	// One store for both the API and the console, exactly as run() wires it: a
+	// create through the browser must be visible to the API and vice versa.
+	backend.Environments = consoleStore
 	key, err := hex.DecodeString(webuiTestKey)
 	if err != nil {
 		return nil, nil, err
@@ -580,7 +587,7 @@ func buildMuxWithSessions(getenv func(string) string, backend *api.Server, store
 			principals[p.ID] = p
 		}
 	}
-	root, err := consoleRoot(backend, transport, session, principals)
+	root, err := consoleRoot(backend, transport, session, principals, consoleStore)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -883,7 +890,9 @@ func environmentMux(t *testing.T) (*http.ServeMux, *identity.Manager, string, st
 		Room:      &reviewer.Room{},
 		Passports: &passport.Registry{},
 	}
-	mux, mgr, err := buildMuxWithSessions(webuiEnv(), backend, dodo.NewMemoryStore(), "memory")
+	consoleStore := &api.MemoryEnvironments{Environments: backend.Environments.All()}
+	backend.Environments = consoleStore
+	mux, mgr, err := buildMuxWithStore(webuiEnv(), backend, dodo.NewMemoryStore(), "memory", consoleStore)
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -1163,5 +1172,232 @@ func TestVendoredAssetsAreServed(t *testing.T) {
 	}
 	if rec.Body.Len() == 0 {
 		t.Error("the script body is empty")
+	}
+}
+
+// consoleWithStore builds a console over a specific store, so a create test can
+// assert on the store it created into.
+func consoleWithStore(t *testing.T) (*http.ServeMux, *identity.Manager, *api.MemoryEnvironments, func(string) *http.Cookie) {
+	t.Helper()
+	backend := testBackend(map[string]contract.Principal{
+		"org-a-user": {ID: "org-a-user", Grants: []string{"org-a"}},
+	})
+	consoleStore := &api.MemoryEnvironments{}
+	mux, mgr, err := buildMuxWithStore(webuiEnv(), backend, dodo.NewMemoryStore(), "memory", consoleStore)
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	cookie := func(principal string) *http.Cookie {
+		s, _, err := mgr.StartSession(principal, false, time.Now())
+		if err != nil {
+			t.Fatalf("StartSession(%s): %v", principal, err)
+		}
+		return &http.Cookie{Name: webui.CookieName, Value: s.ID}
+	}
+	return mux, mgr, consoleStore, cookie
+}
+
+// createFormCSRF extracts the CSRF token and request id from the rendered
+// create form, because a test that invents them would not prove the form works.
+func createFormCSRF(t *testing.T, mux *http.ServeMux, cookie *http.Cookie) (csrf, requestID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/env/new", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create page status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	csrf = between(body, `name="csrf_token" value="`, `"`)
+	requestID = between(body, `name="request_id" value="`, `"`)
+	if csrf == "" || requestID == "" {
+		t.Fatalf("the create form did not carry csrf/request id (csrf=%q req=%q)", csrf, requestID)
+	}
+	return csrf, requestID
+}
+
+func between(s, open, close string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// The create flow end to end: form renders with a forecast before the confirm
+// control, POST creates exactly one environment, 303 to its detail page, and
+// the detail page shows it queued.
+func TestCreateFlowEndToEnd(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{
+		"csrf_token": {csrf},
+		"request_id": {requestID},
+		"repo":       {"org-a/api"},
+		"profile":    {"preview-small"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("create status = %d, want 303 (body: %s)", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/env/") {
+		t.Fatalf("redirect = %q, want /env/{id}", loc)
+	}
+	if n := len(store.All()); n != 1 {
+		t.Fatalf("store has %d environments, want 1", n)
+	}
+
+	// The created environment is queued, not ready: no actions have been
+	// recorded, so no phase may claim to have run.
+	id := strings.TrimPrefix(loc, "/env/")
+	created, ok := store.Get(id)
+	if !ok {
+		t.Fatalf("the redirected id %q is not in the store", id)
+	}
+	if len(created.Actions) != 0 {
+		t.Errorf("a newly created environment carries %d actions; nothing has run", len(created.Actions))
+	}
+
+	// The detail page renders it as pending.
+	req = httptest.NewRequest(http.MethodGet, loc, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail after create: status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `data-state="pending"`) {
+		t.Error("a newly created environment must be shown as pending, not ready")
+	}
+}
+
+// A retried submission with the same request id returns the first result rather
+// than making a second environment.
+func TestCreateIsIdempotentByRequestID(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+	csrf, requestID := createFormCSRF(t, mux, c)
+
+	post := func() string {
+		form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+		req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(c)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Header().Get("Location")
+	}
+	first := post()
+	second := post()
+	if first == "" || first != second {
+		t.Fatalf("retried create redirected to %q then %q; both must be the first result", first, second)
+	}
+	if n := len(store.All()); n != 1 {
+		t.Errorf("store has %d environments after a retried create, want 1", n)
+	}
+}
+
+// A POST without the CSRF token is refused, and creates nothing.
+func TestCreateWithoutCSRFIsRefused(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+	form := url.Values{"request_id": {"r1"}, "repo": {"org-a/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if n := len(store.All()); n != 0 {
+		t.Errorf("a CSRF-refused create left %d environments in the store", n)
+	}
+}
+
+// A create for a repository outside the caller's grants is a denial with the
+// denied glyph, and creates nothing.
+func TestCreateOutsideGrantsIsADenial(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-b/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-state="denied"`) {
+		t.Error("a grant refusal must render as a denial, with its own glyph")
+	}
+	if strings.Contains(body, `data-state="quota"`) {
+		t.Error("a grant refusal must not be rendered as a quota refusal")
+	}
+	if n := len(store.All()); n != 0 {
+		t.Errorf("a denied create left %d environments in the store", n)
+	}
+}
+
+// The quota refusal renders the quota glyph with its own recovery line, and
+// leaves the store holding only the environment the first create made.
+func TestCreateQuotaRefusalRendersQuotaState(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+
+	// Fill the entitlement: one environment in a covered scope.
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the first create must succeed: status = %d", rec.Code)
+	}
+
+	// The second create for the same principal is over the entitlement.
+	csrf, requestID = createFormCSRF(t, mux, c)
+	form = url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+	req = httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("quota refusal status = %d, want 403", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-state="quota"`) {
+		t.Error("an entitlement refusal must render as a quota refusal, with its own glyph")
+	}
+	if strings.Contains(body, `data-state="denied"`) {
+		t.Error("a quota refusal must not be rendered as a policy denial")
+	}
+	if !strings.Contains(body, "one running environment per principal") {
+		t.Error("the quota refusal must say what the entitlement is")
+	}
+	if n := len(store.All()); n != 1 {
+		t.Errorf("a refused create left the store at %d environments, want 1", n)
 	}
 }
