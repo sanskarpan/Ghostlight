@@ -27,8 +27,9 @@ type stubOIDC struct {
 	kid    string
 	issuer string
 
-	mu     sync.Mutex
-	nonces map[string]string // code -> nonce to embed
+	mu      sync.Mutex
+	nonces  map[string]string // code -> nonce to embed
+	subject string            // the subject every minted token carries
 }
 
 func newStubOIDC(t *testing.T) *stubOIDC {
@@ -37,7 +38,7 @@ func newStubOIDC(t *testing.T) *stubOIDC {
 	if err != nil {
 		t.Fatalf("rsa key: %v", err)
 	}
-	s := &stubOIDC{t: t, key: key, kid: "stub-key-1", nonces: make(map[string]string)}
+	s := &stubOIDC{t: t, key: key, kid: "stub-key-1", nonces: make(map[string]string), subject: "user-42"}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +96,7 @@ func (s *stubOIDC) mint(audience, nonce string) string {
 	claims := map[string]any{
 		"iss":   s.issuer,
 		"aud":   audience,
-		"sub":   "user-42",
+		"sub":   s.subject,
 		"email": "operator@acme.test",
 		"name":  "Operator",
 		"exp":   now + 300,

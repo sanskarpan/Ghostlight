@@ -43,6 +43,13 @@ type Environment struct {
 type Environments interface {
 	// Get returns an environment, and whether it exists.
 	Get(id string) (Environment, bool)
+	// All returns every environment in the store, unscoped.
+	//
+	// It is deliberately unscoped: a store cannot know a caller's grants, so
+	// the caller filters before building anything. Returning an already-scoped
+	// set would put the authorization rule in two places, and the second place
+	// is always the one that drifts.
+	All() []Environment
 }
 
 // MemoryEnvironments is an in-memory environment store.
@@ -50,6 +57,9 @@ type MemoryEnvironments struct {
 	// Environments are the stored environments.
 	Environments []Environment
 }
+
+// All returns every stored environment.
+func (m MemoryEnvironments) All() []Environment { return m.Environments }
 
 // Get returns the environment with the given identifier.
 func (m MemoryEnvironments) Get(id string) (Environment, bool) {
