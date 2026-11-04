@@ -17,6 +17,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/a11ygate"
 	"github.com/sanskarpan/Ghostlight/internal/billing"
+	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/dodo"
 	"github.com/sanskarpan/Ghostlight/internal/identity"
@@ -562,7 +563,15 @@ func buildMuxWithSessions(getenv func(string) string, backend *api.Server, store
 	if err != nil {
 		return nil, nil, err
 	}
-	root, err := consoleRoot(backend, transport, session)
+	// The console authorizes against the same principal set the API uses, so a
+	// test principal with grants can reach a detail page and one without cannot.
+	principals := map[string]contract.Principal{}
+	if auth, ok := backend.Auth.(api.StaticAuthenticator); ok {
+		for _, p := range auth.Tokens {
+			principals[p.ID] = p
+		}
+	}
+	root, err := consoleRoot(backend, transport, session, principals)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -589,7 +598,7 @@ func TestLoginPlaceholderServesInsteadOfLooping(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Sign-in is not wired yet") {
+	if !strings.Contains(rec.Body.String(), "Sign-in is not configured") {
 		t.Error("the page must say plainly that the flow is not wired")
 	}
 	rep, err := a11ygate.AuditDocument(rec.Body.String())
@@ -614,7 +623,7 @@ func TestSignInUnconfiguredExplainsRatherThanLoops(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Sign-in is not wired yet") {
+	if !strings.Contains(rec.Body.String(), "Sign-in is not configured") {
 		t.Error("the page must say plainly that the flow is not configured")
 	}
 	if rec.Header().Get("Location") != "" {
@@ -826,5 +835,149 @@ func TestSignInRefusesATokenForAnotherNonce(t *testing.T) {
 	}
 	if after := mgr.SessionCount(); after != before {
 		t.Errorf("a nonce mismatch created a session: count %d -> %d", before, after)
+	}
+}
+
+// environmentMux builds a console whose store holds one environment in one
+// org, with a principal whose grant covers it and a second principal whose
+// grant does not.
+func environmentMux(t *testing.T) (*http.ServeMux, *identity.Manager, string, string) {
+	t.Helper()
+	ops := contract.Registry{}
+	backend := &api.Server{
+		Auth: api.StaticAuthenticator{Tokens: map[string]contract.Principal{
+			"org-a-user": {ID: "org-a-user", Grants: []string{"org-a"}},
+			"org-b-user": {ID: "org-b-user", Grants: []string{"org-b"}},
+		}},
+		Operations: ops,
+		Authorizer: &contract.Authorizer{Registry: ops},
+		Environments: api.MemoryEnvironments{Environments: []api.Environment{{
+			ID: "env-a-1", Scope: "org-a", Version: 1, Generation: 4,
+			ExpiresAt: time.Now().Add(time.Hour),
+			Actions: []console.RecordedAction{{
+				ID: "act-1", Phase: console.PhaseFoundationWarmup,
+				Outcome: console.OutcomeUncertain, Detail: "the provider never answered",
+			}},
+		}}},
+		Room:      &reviewer.Room{},
+		Passports: &passport.Registry{},
+	}
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), backend, dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	return mux, mgr, "org-a-user", "org-b-user"
+}
+
+// The detail page is served as HTML from the real server, and its served bytes
+// pass the accessibility gate. This is the point of FE-3: the renderer's 104
+// tests finally cover something a browser receives.
+func TestEnvironmentDetailIsServedAndPassesTheGate(t *testing.T) {
+	mux, mgr, owner, _ := environmentMux(t)
+	session, _, err := mgr.StartSession(owner, false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/env/env-a-1", nil)
+	req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content type = %q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h1>env-a-1</h1>",
+		"Abort the run",
+		"Review the candidate",
+		"Refresh",
+		"Foundation warmup",
+		"the provider never answered",
+		"Next step:",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served page is missing %q", want)
+		}
+	}
+
+	rep, err := a11ygate.AuditDocument(body)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Errorf("the served detail page violates %d accessibility rules", len(rep.Violations))
+		for _, v := range rep.Violations {
+			t.Logf("  %s: %s", v.Rule, v.Detail)
+		}
+	}
+}
+
+// Another org's environment is a 404, not a 403: the operator must not learn
+// that the id exists. Same status as an id that never existed, so the two are
+// indistinguishable from outside.
+func TestAnotherOrgsEnvironmentIsNotFound(t *testing.T) {
+	mux, mgr, _, outsider := environmentMux(t)
+	session, _, err := mgr.StartSession(outsider, false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	do := func(path string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	codeMissing, bodyMissing := do("/env/does-not-exist")
+	codeForeign, bodyForeign := do("/env/env-a-1")
+	if codeMissing != http.StatusNotFound || codeForeign != http.StatusNotFound {
+		t.Fatalf("missing=%d foreign=%d, want 404 for both", codeMissing, codeForeign)
+	}
+	for _, body := range []string{bodyMissing, bodyForeign} {
+		if strings.Contains(body, "env-a-1") || strings.Contains(body, "org-a") {
+			t.Error("a refused detail request must not leak the environment's name or scope")
+		}
+		if strings.Contains(body, "never answered") {
+			t.Error("a refused detail request must not leak the environment's action detail")
+		}
+	}
+}
+
+// A signed-out request never reaches the page: the service redirects to
+// sign-in rather than serving HTML to an anonymous caller.
+func TestEnvironmentDetailRequiresASession(t *testing.T) {
+	mux, _, _, _ := environmentMux(t)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/env/env-a-1", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
+	}
+	if strings.Contains(rec.Body.String(), "env-a-1") {
+		t.Error("an unauthenticated response must not name the environment")
+	}
+}
+
+// The detail route is GET-only.
+func TestEnvironmentDetailRefusesNonGet(t *testing.T) {
+	mux, mgr, owner, _ := environmentMux(t)
+	session, _, err := mgr.StartSession(owner, false, time.Now())
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/env/env-a-1", nil)
+	req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: session.ID})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
