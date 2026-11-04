@@ -85,8 +85,10 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/api"
 	"github.com/sanskarpan/Ghostlight/internal/billing"
+	"github.com/sanskarpan/Ghostlight/internal/consolerender"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/dodo"
+	"github.com/sanskarpan/Ghostlight/internal/envpage"
 	"github.com/sanskarpan/Ghostlight/internal/identity"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/postgres"
@@ -292,7 +294,15 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 	if err != nil {
 		return nil, nil, err
 	}
-	root, err := consoleRoot(backend, transport, session)
+	// The console authorizes against the same principal set the API uses, so a
+	// signed-in operator sees exactly what their bearer token would.
+	principals := map[string]contract.Principal{}
+	if auth, ok := backend.Auth.(api.StaticAuthenticator); ok {
+		for _, p := range auth.Tokens {
+			principals[p.ID] = p
+		}
+	}
+	root, err := consoleRoot(backend, transport, session, principals)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -310,10 +320,27 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 // 404 would strand every signed-out visitor. The page says plainly that the
 // flow arrives with FE-2 - a missing feature and a broken loop are different
 // facts.
-func consoleRoot(backend *api.Server, transport *webui.Transport, session http.Handler) (http.Handler, error) {
+func consoleRoot(backend *api.Server, transport *webui.Transport, session http.Handler, principals map[string]contract.Principal) (http.Handler, error) {
+	// The session carries a subject; the API authorizes on grants. One map, two
+	// credential types: a browser session resolves to the same principal a
+	// bearer token does, so authorization is not written twice.
+	principalOf := func(r *http.Request) (contract.Principal, bool) {
+		s, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			return contract.Principal{}, false
+		}
+		p, ok := principals[s.PrincipalID]
+		return p, ok
+	}
+	detail := transport.Require(environmentDetail(backend.Environments, principalOf))
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1" {
 			backend.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/env/") {
+			detail.ServeHTTP(w, r)
 			return
 		}
 		session.ServeHTTP(w, r)
@@ -448,15 +475,64 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 	}), nil
 }
 
+// environmentDetail serves GET /env/{id}: the console's first real page.
+//
+// Scope is checked before the page is built, and a miss is 404 rather than 403,
+// because presence must not leak: an operator should not be able to tell "that
+// environment belongs to someone else" from "that environment does not exist".
+//
+// The environment comes from the store the API already reads, so the console and
+// the API cannot disagree about what an environment is.
+func environmentDetail(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/env/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		env, ok := store.Get(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		principal, ok := principalOf(r)
+		if !ok || !principal.Covers(env.Scope) {
+			// 404, not 403: the operator must not learn that this id exists.
+			http.NotFound(w, r)
+			return
+		}
+		page, err := envpage.Build(env, time.Now())
+		if err != nil {
+			log.Printf("environment page refused: %v", err)
+			http.Error(w, "cannot render this environment", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderPage(page)
+		if err != nil {
+			log.Printf("environment page did not render: %v", err)
+			http.Error(w, "cannot render this environment", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(doc))
+	})
+}
+
 const loginPlaceholderHTML = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Sign-in - Ghostlight</title></head>
 <body>
 <a class="skip" href="#main">Skip to main content</a>
 <main id="main" tabindex="-1">
-<h1>Sign-in is not wired yet</h1>
-<p>The console's session transport exists; the identity-provider flow lands with
-the next change. Until then there is nothing to sign in with.</p>
+<h1>Sign-in is not configured</h1>
+<p>This deployment has no identity provider set. The console, its sessions and
+its pages all work; there is only nothing to sign in with until an administrator
+sets the issuer, the client identifier and the callback URL.</p>
 </main>
 </body>
 </html>
