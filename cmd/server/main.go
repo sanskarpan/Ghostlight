@@ -92,6 +92,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/postgres"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
 	"github.com/sanskarpan/Ghostlight/internal/webui"
+	"github.com/sanskarpan/Ghostlight/internal/zitadel"
 	"github.com/sanskarpan/Ghostlight/migrations"
 
 	_ "github.com/lib/pq"
@@ -287,7 +288,11 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 	if err != nil {
 		return nil, nil, err
 	}
-	root, err := consoleRoot(backend, transport)
+	session, err := signIn(getenv, transport, manager, SessionPage())
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err := consoleRoot(backend, transport, session)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -305,19 +310,141 @@ func htmlRoot(getenv func(string) string, backend *api.Server) (http.Handler, *i
 // 404 would strand every signed-out visitor. The page says plainly that the
 // flow arrives with FE-2 - a missing feature and a broken loop are different
 // facts.
-func consoleRoot(backend *api.Server, transport *webui.Transport) (http.Handler, error) {
+func consoleRoot(backend *api.Server, transport *webui.Transport, session http.Handler) (http.Handler, error) {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1" {
 			backend.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/login" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(loginPlaceholderHTML))
-			return
+		session.ServeHTTP(w, r)
+	}), nil
+}
+
+// signIn builds the /login and /auth/callback routes.
+//
+// The provider is optional on purpose. Without ZITADEL_ISSUER and
+// ZITADEL_CLIENT_ID the console still needs a sign-in page, and that page says
+// plainly that identity is not wired — a 503 with a reason, not a broken form
+// and not a redirect loop. With them, /login starts a real authorization-code
+// flow and /auth/callback completes it.
+//
+// The callback always responds the same way on failure: back to /login with no
+// session. An operator should not be able to tell an invalid state from a bad
+// nonce from an unverifiable token, because that distinction is an attacker's
+// diagnostic and not a user's.
+func signIn(getenv func(string) string, transport *webui.Transport, manager *identity.Manager, page http.Handler) (http.Handler, error) {
+	issuer := strings.TrimSpace(getenv("ZITADEL_ISSUER"))
+	clientID := strings.TrimSpace(getenv("ZITADEL_CLIENT_ID"))
+	if issuer == "" || clientID == "" {
+		log.Printf("sign-in not configured (ZITADEL_ISSUER/ZITADEL_CLIENT_ID unset): /login serves an explanation")
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/login":
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(loginPlaceholderHTML))
+			case "/auth/callback":
+				// No provider is configured, so no callback is in flight. It is
+				// still a route rather than a 404, and it refuses on method or
+				// otherwise sends the visitor to the explanation.
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				http.Redirect(w, r, "/login", http.StatusFound)
+			default:
+				transport.Require(page).ServeHTTP(w, r)
+			}
+		}), nil
+	}
+
+	redirectURI := strings.TrimSpace(getenv("ZITADEL_REDIRECT_URI"))
+	if redirectURI == "" {
+		return nil, errors.New("ZITADEL_REDIRECT_URI is required when sign-in is configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	flow, err := webui.NewFlow(ctx, webui.FlowConfig{
+		Issuer:       issuer,
+		ClientID:     clientID,
+		ClientSecret: strings.TrimSpace(getenv("ZITADEL_CLIENT_SECRET")),
+		RedirectURI:  redirectURI,
+	})
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := zitadel.NewVerifier(ctx, zitadel.Config{Issuer: issuer, Audience: clientID})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("sign-in mounted at /login against %s", issuer)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// The destination is this request's own path, sanitised. Only a
+			// same-origin path survives; anything else becomes the overview.
+			target := "/"
+			if next := r.URL.Query().Get("next"); webui.SafeTarget(next) {
+				target = next
+			}
+			authz, err := flow.Start(target)
+			if err != nil {
+				log.Printf("sign-in start refused: %v", err)
+				http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			http.Redirect(w, r, authz, http.StatusFound)
+		case "/auth/callback":
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// A provider-reported error is a refused sign-in, not a crash.
+			if e := r.URL.Query().Get("error"); e != "" {
+				log.Printf("sign-in refused by provider: %s", e)
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			state := r.URL.Query().Get("state")
+			code := r.URL.Query().Get("code")
+			if state == "" || code == "" {
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			result, err := flow.Finish(r.Context(), state, code, func(ctx context.Context, token string) (webui.Claims, error) {
+				claims, err := verifier.Verify(ctx, token)
+				if err != nil {
+					return webui.Claims{}, err
+				}
+				return webui.Claims{Subject: claims.Subject, Email: claims.Email, Name: claims.Name}, nil
+			})
+			if err != nil {
+				// Indistinguishable on purpose: see the comment above.
+				log.Printf("sign-in callback refused: %v", err)
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			session, _, err := manager.StartSession(result.Subject, false, time.Now())
+			if err != nil {
+				log.Printf("sign-in could not start a session: %v", err)
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			transport.SetCookie(w, r, session.ID)
+			http.Redirect(w, r, result.Target, http.StatusSeeOther)
+		default:
+			transport.Require(page).ServeHTTP(w, r)
 		}
-		transport.Require(SessionPage()).ServeHTTP(w, r)
 	}), nil
 }
 

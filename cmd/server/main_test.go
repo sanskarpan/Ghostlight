@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -555,7 +556,13 @@ func buildMuxWithSessions(getenv func(string) string, backend *api.Server, store
 	if err != nil {
 		return nil, nil, err
 	}
-	root, err := consoleRoot(backend, transport)
+	// Mirror production: signIn decides between the explanation page and a real
+	// flow, so the tests exercise the same route table the server serves.
+	session, err := signIn(getenv, transport, manager, SessionPage())
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err := consoleRoot(backend, transport, session)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -591,5 +598,233 @@ func TestLoginPlaceholderServesInsteadOfLooping(t *testing.T) {
 	}
 	if len(rep.Violations) != 0 {
 		t.Errorf("the login placeholder violates %d accessibility rules", len(rep.Violations))
+	}
+}
+
+// With no provider configured the sign-in page explains itself with 503 — it
+// does not redirect (which would loop, since Require sends browsers to /login)
+// and it does not serve a broken form.
+func TestSignInUnconfiguredExplainsRatherThanLoops(t *testing.T) {
+	mux, _, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Sign-in is not wired yet") {
+		t.Error("the page must say plainly that the flow is not configured")
+	}
+	if rec.Header().Get("Location") != "" {
+		t.Error("the unconfigured sign-in page must not redirect")
+	}
+}
+
+// A half-configured provider refuses the start rather than running with a flow
+// whose callback could never complete.
+func TestSignInRefusesPartialConfiguration(t *testing.T) {
+	mgr, err := identity.NewManager(time.Now)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	tr, err := webui.NewTransport(mgr, []byte("0123456789abcdef0123456789abcdef"), time.Now)
+	if err != nil {
+		t.Fatalf("NewTransport: %v", err)
+	}
+	env := func(key string) string {
+		switch key {
+		case "ZITADEL_ISSUER":
+			return "http://localhost:8080"
+		case "ZITADEL_CLIENT_ID":
+			return "ghostlight-console"
+		default:
+			return "" // no ZITADEL_REDIRECT_URI
+		}
+	}
+	if _, err := signIn(env, tr, mgr, SessionPage()); err == nil {
+		t.Error("an issuer and client id without a redirect URI must refuse the start")
+	}
+}
+
+// /auth/callback refuses a provider error, a missing state and a missing code
+// with the same redirect to /login and no session. An operator should not be
+// able to tell which check failed.
+func TestCallbackRefusesIncompleteOrErroredReturns(t *testing.T) {
+	mux, mgr, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	before := mgr.SessionCount()
+	for _, target := range []string{
+		"/auth/callback?error=access_denied",
+		"/auth/callback",
+		"/auth/callback?state=x",
+		"/auth/callback?code=y",
+		"/auth/callback?state=never-minted&code=z",
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusFound {
+			t.Errorf("%s: status = %d, want 302", target, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Errorf("%s: Location = %q, want /login", target, loc)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == webui.CookieName && c.Value != "" {
+				t.Errorf("%s: a refused callback must not set a session cookie", target)
+			}
+		}
+	}
+	if after := mgr.SessionCount(); after != before {
+		t.Errorf("session count changed from %d to %d across refused callbacks", before, after)
+	}
+}
+
+// The sign-in routes are GET-only: a state-changing method on them is refused
+// rather than treated as a sign-in.
+func TestSignInRoutesRefuseNonGet(t *testing.T) {
+	mux, _, err := buildMuxWithSessions(webuiEnv(), testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	for _, path := range []string{"/login", "/auth/callback"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s POST: status = %d, want 405", path, rec.Code)
+		}
+	}
+}
+
+// End-to-end sign-in against a stub provider: /login redirects to the
+// authorization endpoint, the provider returns a code, and /auth/callback
+// creates a session whose cookie then opens the console. This is the ticket's
+// full-flow proof; the same path runs against local Zitadel manually.
+func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
+	provider := newStubOIDC(t)
+
+	env := func(key string) string {
+		switch key {
+		case "GHOSTLIGHT_WEBUI_KEY":
+			return webuiTestKey
+		case "ZITADEL_ISSUER":
+			return provider.issuer
+		case "ZITADEL_CLIENT_ID":
+			return "ghostlight-console"
+		case "ZITADEL_REDIRECT_URI":
+			return provider.issuer + "/auth/callback"
+		default:
+			return ""
+		}
+	}
+	mux, mgr, err := buildMuxWithSessions(env, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux with a provider: %v", err)
+	}
+	before := mgr.SessionCount()
+
+	// 1. /login sends the browser to the provider's authorization endpoint.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login?next=/env/7", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("/login status = %d, want 302", rec.Code)
+	}
+	authz, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("authorize URL does not parse: %v", err)
+	}
+	if !strings.HasPrefix(authz.String(), provider.issuer) {
+		t.Fatalf("authorize URL left the provider: %q", authz)
+	}
+	state := authz.Query().Get("state")
+	nonce := authz.Query().Get("nonce")
+	if state == "" || nonce == "" {
+		t.Fatalf("authorize URL carries state=%q nonce=%q; both are required", state, nonce)
+	}
+
+	// 2. The provider redirects back with a code. The stub mints an id_token
+	//    carrying the flow's nonce, which is what real Zitadel does.
+	provider.issueCode("code-1", nonce)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state+"&code=code-1", nil))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("callback status = %d, want 303 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/env/7" {
+		t.Errorf("post-sign-in destination = %q, want /env/7: the flow must honour the target", loc)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == webui.CookieName && c.Value != "" {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("a completed sign-in must set a session cookie")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("the session cookie must be HttpOnly")
+	}
+	if after := mgr.SessionCount(); after != before+1 {
+		t.Errorf("session count = %d, want %d: a completed sign-in creates exactly one", after, before+1)
+	}
+
+	// 3. That cookie opens the console.
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(sessionCookie)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signed-in console status = %d, want 200", rec.Code)
+	}
+
+	// 4. Replaying the same callback is refused: the flow was consumed.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state+"&code=code-1", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+		t.Errorf("replayed callback: status=%d location=%q, want 302 /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// A token minted for a different nonce is refused even though it verifies: it
+// is genuine, but not genuine for this sign-in attempt.
+func TestSignInRefusesATokenForAnotherNonce(t *testing.T) {
+	provider := newStubOIDC(t)
+	env := func(key string) string {
+		switch key {
+		case "GHOSTLIGHT_WEBUI_KEY":
+			return webuiTestKey
+		case "ZITADEL_ISSUER":
+			return provider.issuer
+		case "ZITADEL_CLIENT_ID":
+			return "ghostlight-console"
+		case "ZITADEL_REDIRECT_URI":
+			return provider.issuer + "/auth/callback"
+		default:
+			return ""
+		}
+	}
+	mux, mgr, err := buildMuxWithSessions(env, testBackend(nil), dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux: %v", err)
+	}
+	before := mgr.SessionCount()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	authz, _ := url.Parse(rec.Header().Get("Location"))
+	state := authz.Query().Get("state")
+
+	provider.issueCode("code-1", "a-nonce-from-another-flow")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state+"&code=code-1", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+		t.Errorf("status=%d location=%q, want 302 /login", rec.Code, rec.Header().Get("Location"))
+	}
+	if after := mgr.SessionCount(); after != before {
+		t.Errorf("a nonce mismatch created a session: count %d -> %d", before, after)
 	}
 }
