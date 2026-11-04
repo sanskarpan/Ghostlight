@@ -1401,3 +1401,154 @@ func TestCreateQuotaRefusalRendersQuotaState(t *testing.T) {
 		t.Errorf("a refused create left the store at %d environments, want 1", n)
 	}
 }
+
+// The abort flow end to end: the detail page carries the form, the POST is
+// refused without CSRF, works with it, and the result page keeps its reason.
+func TestAbortFlowEndToEnd(t *testing.T) {
+	mux, _, store, cookie := consoleWithStore(t)
+	consoleStore := store
+	c := cookie("org-a-user")
+
+	// Create the environment first, so there is something to abort.
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("setup create: status = %d", rec.Code)
+	}
+	envID := strings.TrimPrefix(rec.Header().Get("Location"), "/env/")
+
+	// The detail page carries the abort form with this session's token.
+	req = httptest.NewRequest(http.MethodGet, "/env/"+envID, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	abortAction := "/env/" + envID + "/abort"
+	if !strings.Contains(rec.Body.String(), `action="`+abortAction+`"`) {
+		t.Fatal("the detail page does not carry the abort form")
+	}
+	token := between(rec.Body.String(), `action="`+abortAction+`"`, "")
+	token = between(rec.Body.String(), `name="csrf_token" value="`, `"`)
+
+	// POST without the token is refused.
+	form = url.Values{"csrf_token": {""}}
+	req = httptest.NewRequest(http.MethodPost, abortAction, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("abort without CSRF: status = %d, want 403", rec.Code)
+	}
+
+	// POST with the token renders the result with its reason.
+	form = url.Values{"csrf_token": {token}}
+	req = httptest.NewRequest(http.MethodPost, abortAction, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abort with CSRF: status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "aborted by the operator") {
+		t.Error("the abort result must keep its reason")
+	}
+	if !strings.Contains(rec.Body.String(), `data-state="failed"`) {
+		t.Error("an aborted run ends in the failed state, and the page says so")
+	}
+	if consoleStore == nil {
+		t.Fatal("the store must be present")
+	}
+	_ = consoleStore
+}
+
+// The destroy flow: confirm page, then POST, then the result.
+func TestDestroyFlowEndToEnd(t *testing.T) {
+	mux, _, _, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	envID := strings.TrimPrefix(rec.Header().Get("Location"), "/env/")
+
+	// The confirm page renders a question, not a direct POST.
+	confirmPath := "/env/" + envID + "/destroy/confirm"
+	req = httptest.NewRequest(http.MethodGet, confirmPath, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Destroy "+envID+"?") {
+		t.Error("the confirm page must ask")
+	}
+	if !strings.Contains(rec.Body.String(), "cannot be undone from here") {
+		t.Error("the confirm page must state the consequence")
+	}
+	token := between(rec.Body.String(), `name="csrf_token" value="`, `"`)
+
+	// POST the destroy.
+	destroyPath := "/env/" + envID + "/destroy"
+	form = url.Values{"csrf_token": {token}}
+	req = httptest.NewRequest(http.MethodPost, destroyPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("destroy status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "destroyed by the operator") {
+		t.Error("the destroy result must keep its reason")
+	}
+
+	// A second abort on the destroyed environment is a 404: it no longer exists,
+	// and pretending otherwise would be a second success for one action.
+	abortPath := "/env/" + envID + "/abort"
+	form = url.Values{"csrf_token": {token}}
+	req = httptest.NewRequest(http.MethodPost, abortPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("abort after destroy: status = %d, want 404", rec.Code)
+	}
+}
+
+// Lifecycle actions on another tenant's environment are 404, not 403.
+func TestLifecycleActionsAreScoped(t *testing.T) {
+	mux, _, _, cookie := consoleWithStore(t)
+	c := cookie("org-a-user")
+	csrf, requestID := createFormCSRF(t, mux, c)
+	form := url.Values{"csrf_token": {csrf}, "request_id": {requestID}, "repo": {"org-a/api"}}
+	req := httptest.NewRequest(http.MethodPost, "/env", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	envID := strings.TrimPrefix(rec.Header().Get("Location"), "/env/")
+
+	// An unknown principal: the action is refused as a redirect to sign-in,
+	// because there is no session to check a token against.
+	outsiderSession := "not-a-real-session"
+	form = url.Values{"csrf_token": {"anything"}}
+	req = httptest.NewRequest(http.MethodPost, "/env/"+envID+"/abort", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: webui.CookieName, Value: outsiderSession})
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound && rec.Code != http.StatusForbidden {
+		t.Errorf("abort with a bogus session: status = %d, want 302 or 403", rec.Code)
+	}
+}

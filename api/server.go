@@ -74,6 +74,19 @@ func (m *MemoryEnvironments) Add(env Environment) Environment {
 	return env
 }
 
+// Remove deletes an environment from the store. A destroyed environment is
+// gone, not flagged: acting on it again is a 404, which says "gone" more
+// honestly than a second success would.
+func (m *MemoryEnvironments) Remove(id string) {
+	out := m.Environments[:0:0]
+	for _, e := range m.Environments {
+		if e.ID != id {
+			out = append(out, e)
+		}
+	}
+	m.Environments = out
+}
+
 // RememberRequest records which environment a request id produced.
 func (m *MemoryEnvironments) RememberRequest(requestID, envID string) {
 	if m.RequestEnvironments == nil {
