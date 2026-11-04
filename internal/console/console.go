@@ -634,6 +634,15 @@ func defaultReason(s ActionState) string {
 }
 
 // defaultRecovery is the way forward a state carries when the caller gave none.
+// DefaultRecoveryFor returns the recovery line a state carries when the caller
+// gave none.
+//
+// It is exported so a page builder composing its own refusal view produces the
+// same words the renderer's own Resolve would have produced. Two surfaces
+// offering an operator two slightly different next steps is how a recovery
+// instruction stops being trusted.
+func DefaultRecoveryFor(s ActionState) string { return defaultRecovery(s) }
+
 func defaultRecovery(s ActionState) string {
 	switch s {
 	case StateDenied:
