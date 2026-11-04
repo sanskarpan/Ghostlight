@@ -71,9 +71,12 @@ func BuildCreate(form CreateForm) (consolerender.ListPage, error) {
 	// picker is a form control and a table is a reading surface. The renderer's
 	// Page has no form primitive, so the form is assembled as the page body —
 	// every value interpolated is escaped, exactly as the renderer does.
+	//
+	// The section adds no heading of its own: the screen already renders the
+	// page's h2, and a page with three identical headings reads as a template
+	// error, which is what the browser check caught.
 	var body strings.Builder
 	fmt.Fprintf(&body, `<section class="create">`+"\n")
-	fmt.Fprintf(&body, `<h2>%s</h2>`+"\n", console.EscapeHTML(form.Heading))
 	if len(form.Repositories) == 0 {
 		// An operator with no repositories cannot create anything, and saying so
 		// beats rendering a select with nothing in it.
@@ -147,8 +150,8 @@ func BuildCreateRefused(state console.ActionState, reason string) (consolerender
 		return consolerender.ListPage{}, err
 	}
 	var body strings.Builder
+	// The screen already renders the h2; this section adds no duplicate.
 	fmt.Fprintf(&body, `<section class="create refused">`+"\n")
-	fmt.Fprintf(&body, `<h2>Environment not created</h2>`+"\n")
 	fmt.Fprintf(&body, `<p>%s</p>`+"\n", renderBadge(view.State))
 	fmt.Fprintf(&body, `<p class="reason">%s</p>`+"\n", console.EscapeHTML(view.Reason))
 	if view.Recovery != "" {

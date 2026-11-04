@@ -290,6 +290,23 @@ func renderDocument(title, body string) string {
 // The script is only added on pages that carry a live region. Loading htmx on a
 // page with nothing to swap would be dead weight on every static page, and a
 // script tag is a dependency a reader has to account for.
+// HeaderNoStore is the Cache-Control value every authenticated page carries.
+//
+// It is a constant here rather than being set by handlers, because the page is
+// the thing that must not be cached and every page passes through this function.
+// An authenticated document left in a shared browser cache is readable by the
+// next user of the machine, and a header set in one handler but not another is
+// exactly the drift the console's own gates exist to refuse.
+const HeaderNoStore = "no-store, max-age=0"
+
+// PageHeaders are the headers every HTML page is served with.
+func PageHeaders() [][2]string {
+	return [][2]string{
+		{"Cache-Control", HeaderNoStore},
+		{"Pragma", "no-cache"},
+	}
+}
+
 func renderDocumentWithScript(title, body, script string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n")
