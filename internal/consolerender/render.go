@@ -96,6 +96,12 @@ type Page struct {
 	// rendered when supplied, and its own view rules are applied before a byte
 	// is written.
 	Support *consolesupport.View
+	// LifecycleForms is trusted markup for the abort and destroy forms, rendered
+	// immediately after the controls section. It is trusted for the same reason
+	// ListPage.RawHTML is: the caller composes it from escaped values. It lives
+	// beside the controls rather than inside the timeline, so a live-region swap
+	// can never replace it.
+	LifecycleForms string
 	// LiveTimelinePath, when set, makes the timeline poll that path and swap
 	// itself. The fragment it fetches must be rendered by RenderTimelineLive so
 	// it carries the polling attributes and keeps polling.
@@ -178,6 +184,7 @@ func RenderPage(p Page) (string, error) {
 
 	var body strings.Builder
 	body.WriteString(screen)
+	body.WriteString(p.LifecycleForms)
 	body.WriteString(timeline)
 	body.WriteString(actions)
 	body.WriteString(admission)

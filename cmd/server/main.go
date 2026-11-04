@@ -338,11 +338,14 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 	if err != nil {
 		return nil, err
 	}
-	detail := transport.Require(environmentDetail(backend.Environments, principalOf))
+	detail := transport.Require(environmentDetail(backend.Environments, principalOf, transport))
 	timeline := transport.Require(environmentTimeline(backend.Environments, principalOf))
 	list := transport.Require(listPage(store, principalOf))
 	createPageHandler := transport.Require(createPage(transport, reposOf(principalOf)))
 	create := transport.Require(transport.RequireCSRF(createEnvironment(store, principalOf, transport)))
+	abort := transport.Require(transport.RequireCSRF(lifecycleAction(store, principalOf, transport, "abort")))
+	destroy := transport.Require(transport.RequireCSRF(lifecycleAction(store, principalOf, transport, "destroy")))
+	confirmDestroy := transport.Require(destroyConfirm(backend.Environments, principalOf, transport))
 	overview := transport.Require(overviewPage(backend.Environments, principalOf))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -364,6 +367,14 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 			createPageHandler.ServeHTTP(w, r)
 		case strings.HasSuffix(r.URL.Path, "/timeline") && strings.HasPrefix(r.URL.Path, "/env/"):
 			timeline.ServeHTTP(w, r)
+		case strings.HasSuffix(r.URL.Path, "/abort") && strings.HasPrefix(r.URL.Path, "/env/"):
+			abort.ServeHTTP(w, r)
+		case strings.HasSuffix(r.URL.Path, "/destroy/confirm") && strings.HasPrefix(r.URL.Path, "/env/"):
+			// Before /destroy: the confirm path ends with the same word, so the
+			// more specific suffix is matched first.
+			confirmDestroy.ServeHTTP(w, r)
+		case strings.HasSuffix(r.URL.Path, "/destroy") && strings.HasPrefix(r.URL.Path, "/env/"):
+			destroy.ServeHTTP(w, r)
 		case strings.HasPrefix(r.URL.Path, "/env/"):
 			detail.ServeHTTP(w, r)
 		case r.URL.Path == "/env" && r.Method == http.MethodPost:
@@ -599,6 +610,117 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 	}), nil
 }
 
+// lifecycleAction serves POST /env/{id}/abort and POST /env/{id}/destroy.
+//
+// The handler is shared because the checks are identical and only the resulting
+// state differs: both require a session, a CSRF token, a principal whose grants
+// cover the environment's scope, and an environment that has not already ended.
+// What differs is the state the ledger records and the words the result carries.
+//
+// The environment must still exist to be acted on. Aborting an environment that
+// was already destroyed is a 404, not a friendly "already done": the operator
+// should reach the list and see it gone, and a 404 says that more honestly than
+// a second success would.
+func lifecycleAction(store *api.MemoryEnvironments, principalOf func(*http.Request) (contract.Principal, bool), transport *webui.Transport, kind string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		if !transport.VerifyCSRF(s.SessionID, r.PostFormValue("csrf_token")) {
+			http.Error(w, "csrf token missing or invalid", http.StatusForbidden)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/env/"), "/"+kind)
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		env, ok := store.Get(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		principal, ok := principalOf(r)
+		if !ok || !principal.Covers(env.Scope) {
+			http.NotFound(w, r)
+			return
+		}
+
+		var state console.ActionState
+		var reason string
+		if kind == "abort" {
+			state = console.StateFailed
+			reason = "aborted by the operator"
+		} else {
+			state = console.StateExpired
+			reason = "destroyed by the operator"
+		}
+		// A destroyed environment is removed from the store: acting on it again
+		// is a 404, which says "gone" more honestly than a second success would.
+		// The abort result is served from the ledger's own state, so an aborted
+		// environment stays and further aborts remain visible as state.
+		if kind == "destroy" {
+			store.Remove(id)
+		}
+		page, err := envpage.BuildLifecycleResult(id, state, reason)
+		if err != nil {
+			http.Error(w, "cannot render the result", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderListPage(page)
+		if err != nil {
+			http.Error(w, "cannot render the result", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(doc))
+	})
+}
+
+// destroyConfirm serves GET /env/{id}/destroy/confirm.
+func destroyConfirm(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool), transport *webui.Transport) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/env/"), "/destroy/confirm")
+		env, ok := store.Get(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		principal, ok := principalOf(r)
+		if !ok || !principal.Covers(env.Scope) {
+			http.NotFound(w, r)
+			return
+		}
+		page, err := envpage.BuildDestroyConfirm(id, transport.CSRFToken(s.SessionID), nil)
+		if err != nil {
+			http.Error(w, "cannot render the confirmation", http.StatusInternalServerError)
+			return
+		}
+		doc, err := consolerender.RenderListPage(page)
+		if err != nil {
+			http.Error(w, "cannot render the confirmation", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(doc))
+	})
+}
+
 // createPage serves GET /env/new: the admission form.
 //
 // The repositories offered are the ones the caller's grants cover, filtered
@@ -779,7 +901,7 @@ func countOwned(store *api.MemoryEnvironments, principal contract.Principal) int
 //
 // The environment comes from the store the API already reads, so the console and
 // the API cannot disagree about what an environment is.
-func environmentDetail(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool)) http.Handler {
+func environmentDetail(store api.Environments, principalOf func(*http.Request) (contract.Principal, bool), transport *webui.Transport) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -801,6 +923,11 @@ func environmentDetail(store api.Environments, principalOf func(*http.Request) (
 			http.NotFound(w, r)
 			return
 		}
+		session, ok := webui.SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
 		page, err := envpage.Build(env, time.Now())
 		if err != nil {
 			log.Printf("environment page refused: %v", err)
@@ -810,6 +937,10 @@ func environmentDetail(store api.Environments, principalOf func(*http.Request) (
 		page.LiveTimelinePath = "/env/" + id + "/timeline"
 		page.LiveTimelineEvery = timelinePollInterval
 		page.ScriptPath = webui.AssetPath
+		// The lifecycle forms ride beside the controls, not inside the timeline:
+		// a swap replaces the timeline only, and the abort control survives it.
+		page.LifecycleForms = envpage.AbortForm(id, transport.CSRFToken(session.SessionID)) +
+			envpage.DestroyForm(id, transport.CSRFToken(session.SessionID))
 		doc, err := consolerender.RenderPage(page)
 		if err != nil {
 			log.Printf("environment page did not render: %v", err)
