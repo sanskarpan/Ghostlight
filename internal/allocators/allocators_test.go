@@ -61,8 +61,14 @@ func TestPostgresRefusesBadBounds(t *testing.T) {
 	}
 }
 
-// TestInjectionPrimitivesBecomeUnderscores: names are identifiers, and an identifier
-// carrying quotes or semicolons is injection, not a name.
+// TestInjectionPrimitivesBecomeUnderscores: names are identifiers, and an
+// identifier carrying injection primitives must be neutralised.
+//
+// The assertion is on the *name*, not on the whole statement text: the plan's
+// extension revocations are dynamic SQL inside a DO block, which necessarily
+// contains quotes — that is the mechanism, not an injection. What must never
+// happen is a caller-supplied name reaching a statement with its quote or
+// comment syntax intact.
 func TestInjectionPrimitivesBecomeUnderscores(t *testing.T) {
 	r := request(allocators.KindPostgres)
 	r.EnvironmentID = "env-1'; DROP DATABASE x; --"
@@ -71,10 +77,13 @@ func TestInjectionPrimitivesBecomeUnderscores(t *testing.T) {
 		t.Fatalf("allocate: %v", err)
 	}
 	joined := strings.Join(p.Statements, "\n")
-	for _, bad := range []string{"'", ";", "--"} {
+	for _, bad := range []string{"DROP DATABASE x", "'; DROP", "--"} {
 		if strings.Contains(joined, bad) {
-			t.Fatalf("the plan must not contain %q:\n%s", bad, joined)
+			t.Fatalf("the plan carries the caller's injection fragment %q:\n%s", bad, joined)
 		}
+	}
+	if strings.Contains(joined, "env-1'") {
+		t.Fatalf("the caller's quote survived sanitisation:\n%s", joined)
 	}
 }
 

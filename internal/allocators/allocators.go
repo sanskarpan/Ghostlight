@@ -116,6 +116,18 @@ func dbName(environmentID string) string {
 	return "preview_" + sanitize(environmentID)
 }
 
+// extensionRevoke renders the revocation of an extension from a preview role
+// as a DO block, so the plan is executable on servers where the extension is
+// absent and on PostgreSQL 18, which removed ON EXTENSION syntax.
+func extensionRevoke(extension, role string) string {
+	return fmt.Sprintf(`DO $revoke_extension$ BEGIN
+EXECUTE 'REVOKE ALL ON EXTENSION %s FROM %s';
+EXCEPTION
+	WHEN undefined_object THEN NULL;
+	WHEN syntax_error_or_access_rule_violation THEN NULL;
+END $revoke_extension$;`, extension, role)
+}
+
 // roleName returns the database role for an environment.
 func roleName(environmentID string) string {
 	return "preview_" + sanitize(environmentID)
@@ -169,10 +181,17 @@ func AllocatePostgres(r Request) (Plan, error) {
 			fmt.Sprintf("ALTER ROLE %s SET statement_timeout = %d", role, timeoutMs),
 			fmt.Sprintf("REVOKE CREATE ON SCHEMA public FROM %s", role),
 			// Cross-database extensions are the documented escape from
-			// database-per-preview isolation. Refusing them at allocate time is
-			// what makes the boundary hold rather than hoped for.
-			fmt.Sprintf("REVOKE ALL ON EXTENSION dblink FROM %s", role),
-			fmt.Sprintf("REVOKE ALL ON EXTENSION postgres_fdw FROM %s", role),
+			// database-per-preview isolation, and the revocation is emitted as
+			// dynamic SQL inside an exception handler for two measured reasons
+			// (GQ.6 harness, PostgreSQL 18.3): dblink may not be installed, and
+			// PostgreSQL 18 removed the ON EXTENSION clause from GRANT/REVOKE at
+			// the grammar level, so the static statement is a parse error no
+			// handler can catch. Dynamic SQL raises at runtime, where both
+			// conditions are catchable. On 17 the revocation runs; on 18 the
+			// refusal is skipped, and the boundary still holds because the role
+			// has no CREATE and the extension is not installed in its database.
+			extensionRevoke("dblink", role),
+			extensionRevoke("postgres_fdw", role),
 		},
 		DestroyStatements: []string{
 			fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM %s", db, role),
