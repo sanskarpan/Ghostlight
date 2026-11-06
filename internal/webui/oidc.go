@@ -208,7 +208,10 @@ type FinishResult struct {
 	Subject string
 	Email   string
 	Name    string
-	Target  string
+	// MFAVerified is the provider's second-factor assertion, mapped from the
+	// token's authentication-method references by SecondFactorVerified.
+	MFAVerified bool
+	Target      string
 }
 
 // Finish verifies and completes the sign-in. verify is the zitadel verifier's
@@ -253,6 +256,7 @@ func (f *Flow) finishVerified(pending pendingFlow, idToken string, verify func(c
 	result.Subject = claims.Subject
 	result.Email = claims.Email
 	result.Name = claims.Name
+	result.MFAVerified = SecondFactorVerified(claims.AuthMethods)
 	result.Target = pending.redirectTo
 	if !sameOriginPath(result.Target) {
 		// The stored target was checked at Start; this is the belt to that
@@ -406,4 +410,47 @@ type Claims struct {
 	Subject string
 	Email   string
 	Name    string
+	// AuthMethods carries the provider's `amr` claim through, so the session
+	// can record whether a second factor was verified. See
+	// SecondFactorVerified for what may be concluded from it.
+	AuthMethods []string
+}
+
+// secondFactorMethods are the `amr` values this platform accepts as proof a
+// second factor was verified. The set is the RFC 8176 methods a second factor
+// produces: `mfa` (the provider's own multi-factor marker), the OTP family
+// (`otp` for authenticator apps — the value this Zitadel mints for TOTP —
+// plus `otp_sms`, `otp_email` and `sms`), and the key family (`hwk` for
+// hardware keys, `fido2`/`u2f` for passkeys, `swk` for software keys).
+//
+// What deliberately does NOT count: `pwd` (the first factor alone), `user`
+// and `session` (a login continued from an existing provider session — the
+// methods that session established are reported alongside them, so a warm
+// continuation of an MFA sign-in still carries `mfa`/`otp` and stays true),
+// and anything unrecognised. An absent `amr` is false. The list fails
+// closed: a method that is not on it is a method whose meaning this code has
+// not verified, and an unverified method must never assert a second factor.
+var secondFactorMethods = map[string]bool{
+	"mfa":       true,
+	"otp":       true,
+	"otp_sms":   true,
+	"otp_email": true,
+	"sms":       true,
+	"hwk":       true,
+	"fido2":     true,
+	"u2f":       true,
+	"swk":       true,
+}
+
+// SecondFactorVerified maps a verified token's authentication-method
+// references to the session's second-factor record. It is the one place
+// where a provider assertion becomes a session fact, and it is deliberately
+// dumb: the provider decided, this only translates.
+func SecondFactorVerified(authMethods []string) bool {
+	for _, m := range authMethods {
+		if secondFactorMethods[m] {
+			return true
+		}
+	}
+	return false
 }

@@ -99,6 +99,15 @@ type Claims struct {
 	EmailVerified bool
 	// Name is the display name, if the provider supplies one.
 	Name string
+	// AuthMethods are the authentication methods the provider reports having
+	// used (the OIDC `amr` claim, RFC 8176): for this Zitadel, `pwd` for the
+	// password, `otp` for a TOTP second factor and `mfa` when more than one
+	// factor was used. A token minted without a second factor carries no
+	// second-factor method, and one minted without an `amr` at all carries
+	// none — the absence is reported, never guessed into a positive. What a
+	// caller may conclude from these values is the caller's policy; this
+	// package only reports what the provider asserted.
+	AuthMethods []string
 	// ExpiresAt bounds the token. IssuedAt dates it.
 	ExpiresAt time.Time
 	IssuedAt  time.Time
@@ -227,14 +236,15 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Claims, error) {
 		return Claims{}, ErrUnverified
 	}
 	var payload struct {
-		Issuer        string `json:"iss"`
-		Subject       string `json:"sub"`
-		ExpiresAt     int64  `json:"exp"`
-		NotBefore     int64  `json:"nbf"`
-		IssuedAt      int64  `json:"iat"`
-		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
-		Name          string `json:"name"`
+		Issuer        string   `json:"iss"`
+		Subject       string   `json:"sub"`
+		ExpiresAt     int64    `json:"exp"`
+		NotBefore     int64    `json:"nbf"`
+		IssuedAt      int64    `json:"iat"`
+		Email         string   `json:"email"`
+		EmailVerified bool     `json:"email_verified"`
+		Name          string   `json:"name"`
+		AuthMethods   []string `json:"amr"`
 	}
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
 		return Claims{}, ErrUnverified
@@ -264,7 +274,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Claims, error) {
 	}
 	return Claims{
 		Subject: payload.Subject, Email: payload.Email, EmailVerified: payload.EmailVerified,
-		Name:      payload.Name,
+		Name: payload.Name, AuthMethods: payload.AuthMethods,
 		ExpiresAt: time.Unix(payload.ExpiresAt, 0).UTC(),
 		IssuedAt:  time.Unix(payload.IssuedAt, 0).UTC(),
 	}, nil

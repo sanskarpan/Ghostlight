@@ -318,3 +318,79 @@ func TestLocalZitadelDiscoveryServesTheEndpoints(t *testing.T) {
 		t.Errorf("discovery endpoints = %q / %q, both required", doc.Authz, doc.Token)
 	}
 }
+
+// SecondFactorVerified is the translation of a provider assertion into a
+// session fact, so its failure mode is pinned: only methods this code has
+// verified as second factors count, an absent amr counts nothing, and a
+// password-only sign-in — a successful sign-in — still records false.
+func TestSecondFactorVerifiedFailsClosed(t *testing.T) {
+	cases := map[string]struct {
+		methods []string
+		want    bool
+	}{
+		"no amr at all":           {nil, false},
+		"empty amr":               {[]string{}, false},
+		"password only":           {[]string{"pwd"}, false},
+		"provider session re-use": {[]string{"user"}, false},
+		"unrecognised method":     {[]string{"pwd", "something-new"}, false},
+		"totp (the live shape)":   {[]string{"pwd", "otp", "mfa"}, true},
+		"otp alone":               {[]string{"otp"}, true},
+		"provider mfa marker":     {[]string{"pwd", "mfa"}, true},
+		"otp over sms":            {[]string{"pwd", "otp_sms"}, true},
+		"otp over email":          {[]string{"pwd", "otp_email"}, true},
+		"hardware key":            {[]string{"hwk"}, true},
+		"passkey":                 {[]string{"fido2"}, true},
+		"software key":            {[]string{"swk"}, true},
+	}
+	for name, tc := range cases {
+		if got := SecondFactorVerified(tc.methods); got != tc.want {
+			t.Errorf("%s: SecondFactorVerified(%v) = %v, want %v", name, tc.methods, got, tc.want)
+		}
+	}
+}
+
+// Finish carries the provider's second-factor assertion through to the result
+// the server turns into a session, over a token that really carries the amr
+// claim — the same wiring the live Zitadel run exercised.
+func TestFinishCarriesTheSecondFactorAssertion(t *testing.T) {
+	provider := newStubProvider(t)
+	f := newTestFlow(t, provider.issuer)
+
+	for _, tc := range []struct {
+		name    string
+		methods []string
+		want    bool
+	}{
+		{"password and totp", []string{"pwd", "otp", "mfa"}, true},
+		{"password only", []string{"pwd"}, false},
+		{"no amr", nil, false},
+	} {
+		_, _, nonce := startedFlow(t, f, "/")
+		idToken := provider.mintIDToken("ghostlight-console", map[string]any{
+			"nonce": nonce, "amr": tc.methods,
+		})
+		// The verify half mirrors what the server's adapter does: hand the
+		// flow the claims a real verifier would return, amr included.
+		verify := func(_ context.Context, token string) (Claims, error) {
+			payload, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+			if err != nil {
+				return Claims{}, err
+			}
+			var decoded struct {
+				Subject     string   `json:"sub"`
+				AuthMethods []string `json:"amr"`
+			}
+			if err := json.Unmarshal(payload, &decoded); err != nil {
+				return Claims{}, err
+			}
+			return Claims{Subject: decoded.Subject, AuthMethods: decoded.AuthMethods}, nil
+		}
+		result, err := f.finishVerified(pendingFlow{nonce: nonce, redirectTo: "/"}, idToken, verify)
+		if err != nil {
+			t.Fatalf("%s: finishVerified: %v", tc.name, err)
+		}
+		if result.MFAVerified != tc.want {
+			t.Errorf("%s: FinishResult.MFAVerified = %v, want %v", tc.name, result.MFAVerified, tc.want)
+		}
+	}
+}

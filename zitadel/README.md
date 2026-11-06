@@ -163,3 +163,54 @@ leaving it unset is the correct configuration for this client type.
 With those unset, `/login` serves an explanation page with `503` rather than a
 broken form — the console still runs, it just cannot sign anyone in. That is
 deliberate: a missing provider and a broken provider are different states.
+
+## MFA enrolment and recovery (verified live 7 November 2026)
+
+The provider-side second factor was exercised end to end against this
+instance, and the console session now records what the provider asserted.
+
+**Round-trips proven, in order:**
+
+1. **Enrolment.** The TOTP factor was added through the provider's own UI
+   (account → Password and Security → Multifactor → Add Factor → Authenticator
+   Application for TOTP). The dialog shows the base32 secret in text; a code
+   computed locally with RFC 6238 (SHA-1, 6 digits, 30 s) verified it.
+2. **Enforcement.** The moment the factor was active, the still-open console
+   session was refused with `permission_denied: mfa required (AUTHZ-Kl3p0)`
+   and forced back through login — the provider polices the factor it was
+   given.
+3. **Demand + acceptance.** A fresh login demanded "Verify 2-Factor" after the
+   password and accepted the locally computed code. This ran twice.
+4. **The wire to our session.** The ID token minted after a password+TOTP
+   sign-in carries `amr: ["pwd","otp","mfa"]` (observed by exchanging a real
+   authorization code). The callback maps that through
+   `webui.SecondFactorVerified` into the session's `MFAVerified` record;
+   `cmd/server`'s stub-provider test pins the full handler chain.
+5. **Recovery.** Removing the factor (provider UI → Remove Second factor →
+   Delete) and ending the provider session returned sign-in to password-only.
+   A fresh login after recovery minted `amr: ["pwd"]` — no second factor —
+   so the session honestly records `MFAVerified=false` again.
+
+**What the live run taught that the docs did not:**
+
+- **A warm session continuation keeps the amr of how it was established.**
+  After the factor was deleted, a login continued from the still-valid
+  provider session *still* minted `["pwd","otp","mfa"]` — the assertion
+  describes the session's establishment, not the account's current factors.
+  Only after ending the provider session did a fresh login report `["pwd"]`.
+  Code that wants the post-recovery shape must force a fresh login.
+- **The amr vocabulary observed:** `pwd` (password), `otp` (TOTP), `mfa`
+  (multi-factor marker). `webui.SecondFactorVerified` accepts the second
+  factor family (`mfa`, `otp`, `otp_sms`, `otp_email`, `sms`, `hwk`, `fido2`,
+  `u2f`, `swk`) and fails closed on everything else, including an absent
+  claim.
+- **`/v2/sessions` is not served by this build** (404), so the session API
+  cannot drive sign-ins here; the classic authorize flow plus a probe client
+  is the way to observe tokens. The `amr-probe` application
+  (client ID `398452085093302275`, PKCE, redirect
+  `http://localhost:8199/dev-callback`, development mode) exists for exactly
+  that: authorize for it lands on a console 404, which keeps the code in the
+  address bar for an out-of-band exchange.
+- **The admin user's TOTP factor is deliberately absent** after the recovery
+  proof. Re-enrol it the same way before any work that needs the second
+  factor; the enrolment takes about a minute.

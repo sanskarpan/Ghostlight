@@ -27,9 +27,10 @@ type stubOIDC struct {
 	kid    string
 	issuer string
 
-	mu      sync.Mutex
-	nonces  map[string]string // code -> nonce to embed
-	subject string            // the subject every minted token carries
+	mu          sync.Mutex
+	nonces      map[string]string // code -> nonce to embed
+	subject     string            // the subject every minted token carries
+	authMethods []string          // the amr claim minted into every token
 }
 
 func newStubOIDC(t *testing.T) *stubOIDC {
@@ -89,6 +90,14 @@ func (s *stubOIDC) issueCode(code, nonce string) {
 	s.nonces[code] = nonce
 }
 
+// setAuthMethods sets the amr claim future tokens carry: what real Zitadel
+// mints for a password+TOTP sign-in is ["pwd","otp","mfa"].
+func (s *stubOIDC) setAuthMethods(methods []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authMethods = methods
+}
+
 func (s *stubOIDC) mint(audience, nonce string) string {
 	s.t.Helper()
 	header := stubB64(map[string]any{"alg": "RS256", "kid": s.kid, "typ": "JWT"})
@@ -102,6 +111,9 @@ func (s *stubOIDC) mint(audience, nonce string) string {
 		"exp":   now + 300,
 		"iat":   now,
 		"nonce": nonce,
+	}
+	if len(s.authMethods) > 0 {
+		claims["amr"] = s.authMethods
 	}
 	input := header + "." + stubB64(claims)
 	digest := sha256.Sum256([]byte(input))
