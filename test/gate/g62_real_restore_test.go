@@ -23,7 +23,6 @@ package gate_test
 // checklist row keeps them named as remaining.
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -31,72 +30,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/sanskarpan/Ghostlight/internal/pgtemp"
 )
 
-// dockerAvailable reports whether the Docker CLI can run a container.
-func dockerAvailable() bool {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return false
-	}
-	out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput()
-	return err == nil && strings.TrimSpace(string(out)) != ""
-}
-
-// postgresContainer starts a real PostgreSQL 16 with the client tools and
-// returns its host port and container name.
+// postgresContainer starts the shared PostgreSQL container and returns its
+// host port and name. The implementation lives in internal/pgtemp so the G6.3
+// upgrade exercise uses exactly the same server.
 func postgresContainer(t *testing.T) (port int, name string) {
 	t.Helper()
-	name = fmt.Sprintf("g62-restore-%d", time.Now().UnixNano()%1_000_000)
-	run := exec.Command("docker", "run", "-d", "--rm",
-		"--name", name,
-		"-e", "POSTGRES_PASSWORD=g62",
-		"-e", "POSTGRES_USER=g62",
-		"-e", "POSTGRES_DB=g62",
-		"-p", "0:5432",
-		"postgres:16")
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run: %v\n%s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-
-	pout, err := exec.Command("docker", "port", name, "5432/tcp").CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker port: %v\n%s", err, pout)
-	}
-	spec := strings.TrimSpace(string(pout))
-	idx := strings.LastIndex(spec, ":")
-	if idx < 0 {
-		t.Fatalf("cannot parse mapped port from %q", spec)
-	}
-	if _, err := fmt.Sscanf(spec[idx+1:], "%d", &port); err != nil {
-		t.Fatalf("cannot parse port from %q: %v", spec, err)
-	}
-
-	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=g62 password=g62 dbname=g62 sslmode=disable", port)
-	var lastErr error
-	for i := 0; i < 40; i++ {
-		db, err := sql.Open("postgres", dsn)
-		if err == nil {
-			if pingErr := db.PingContext(context.Background()); pingErr == nil {
-				_ = db.Close()
-				return port, name
-			}
-			lastErr = nil
-			_ = db.Close()
-		} else {
-			lastErr = err
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("postgres container never became ready: %v", lastErr)
-	return 0, name
+	c := pgtemp.Start(t)
+	return c.Port, c.Name
 }
 
-// execIn runs a command inside the container, which is where psql and pg_dump
-// live. SQL is streamed on stdin so nothing is written to the host.
+// execIn runs a command inside the container, where psql and pg_dump live.
 func execIn(t *testing.T, name string, stdin []byte, args ...string) []byte {
 	t.Helper()
 	cmd := exec.Command("docker", append([]string{"exec", "-i",
@@ -115,7 +64,7 @@ func execIn(t *testing.T, name string, stdin []byte, args ...string) []byte {
 // pg_dump at a cut, restored into a fresh database, carries exactly the pre-cut
 // ledger state — including a tombstone.
 func TestG62RealDumpRestorePreservesLedgerState(t *testing.T) {
-	if !dockerAvailable() {
+	if !pgtemp.Available() {
 		t.Skip("docker is not available: the real dump/restore needs pg_dump and psql, which the embedded-postgres bundle does not ship")
 	}
 	port, name := postgresContainer(t)
