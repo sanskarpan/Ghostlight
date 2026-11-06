@@ -54,7 +54,12 @@ func admittedEvent(id string) intake.Stored {
 		EventType:  "pull_request",
 		PayloadSHA: "abcdef0123456789",
 		ReceivedAt: intakeNow,
-		ExpiresAt:  intakeNow.Add(30 * 24 * time.Hour),
+		// The store leaves received_at at the database's clock and the schema
+		// requires expiry after receipt, so the horizon must be relative to
+		// the real clock. A fixed date ages into the past and the row becomes
+		// uninsertable — which is exactly what happened on 7 November 2026,
+		// when 30 days past 7 October crossed the wall clock.
+		ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 }
 
@@ -533,7 +538,7 @@ func seedEnvironment(t *testing.T, repoID, suffix, prNumber string) string {
 		INSERT INTO environments
 			(organization_id, repository_id, project_id, slug, source_sha, artifact_digest,
 			 configuration_digest, recipe_digest, policy_digest, resource_profile, expires_at)
-		VALUES ($1,$2,$3,$4,'sha','sha256:a','sha256:c','sha256:r','sha256:p','preview-small','2026-12-01 00:00:00+00')
+		VALUES ($1,$2,$3,$4,'sha','sha256:a','sha256:c','sha256:r','sha256:p','preview-small',now() + interval '30 days')
 		RETURNING id`,
 		orgID, repoID, projectID, "slug-"+suffix).Scan(&envID); err != nil {
 		t.Fatalf("insert environment: %v", err)

@@ -280,3 +280,34 @@ func TestLiveDiscoveryShape(t *testing.T) {
 		t.Fatalf("live JWKS holds no keys")
 	}
 }
+
+// The verifier surfaces the provider's authentication-method references, so
+// the session layer can record a verified second factor. The shape pinned
+// here is what local Zitadel v4.20.0 minted for a password+TOTP sign-in,
+// observed live on 7 November 2026: ["pwd","otp","mfa"]. A token without the
+// claim carries no methods — absence is reported, never guessed into a
+// positive.
+func TestVerifySurfacesAuthenticationMethods(t *testing.T) {
+	k := zitGen(t, "key-1")
+	z := zitUp(t, k)
+	v := zitVerifier(t, z)
+	iss := z.issuerURL()
+
+	payload := zitPayload(iss, zitNow.Add(time.Hour), time.Time{}, zitNow.Add(-time.Minute), "ghostlight-api")
+	payload["amr"] = []string{"pwd", "otp", "mfa"}
+	claims, err := v.Verify(context.Background(), zitMint(t, k, k.kid, "RS256", payload))
+	if err != nil {
+		t.Fatalf("Verify with amr: %v", err)
+	}
+	if len(claims.AuthMethods) != 3 || claims.AuthMethods[0] != "pwd" || claims.AuthMethods[1] != "otp" || claims.AuthMethods[2] != "mfa" {
+		t.Errorf("AuthMethods = %v, want [pwd otp mfa]", claims.AuthMethods)
+	}
+
+	bare, err := v.Verify(context.Background(), zitHonest(t, k, iss, "ghostlight-api"))
+	if err != nil {
+		t.Fatalf("Verify without amr: %v", err)
+	}
+	if len(bare.AuthMethods) != 0 {
+		t.Errorf("a token with no amr claim reported methods %v; absence must stay absence", bare.AuthMethods)
+	}
+}

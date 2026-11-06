@@ -127,7 +127,7 @@ func seedEnv(t *testing.T, suffix string) (envID string, generation uint64) {
 		INSERT INTO environments
 			(organization_id, repository_id, project_id, slug, source_sha, artifact_digest,
 			 configuration_digest, recipe_digest, policy_digest, resource_profile, expires_at)
-		VALUES ($1,$2,$3,$4,'sha','sha256:a','sha256:c','sha256:r','sha256:p','preview-small','2026-12-01 00:00:00+00')
+		VALUES ($1,$2,$3,$4,'sha','sha256:a','sha256:c','sha256:r','sha256:p','preview-small',now() + interval '30 days')
 		RETURNING id`,
 		orgID, repoID, projectID, "pr-"+suffix+"-slug").Scan(&envID); err != nil {
 		t.Fatalf("insert environment: %v", err)

@@ -598,7 +598,10 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 				if err != nil {
 					return webui.Claims{}, err
 				}
-				return webui.Claims{Subject: claims.Subject, Email: claims.Email, Name: claims.Name}, nil
+				return webui.Claims{
+					Subject: claims.Subject, Email: claims.Email, Name: claims.Name,
+					AuthMethods: claims.AuthMethods,
+				}, nil
 			})
 			if err != nil {
 				// Indistinguishable on purpose: see the comment above.
@@ -606,7 +609,10 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
-			session, _, err := manager.StartSession(result.Subject, false, time.Now())
+			// The second-factor record is the provider's own assertion mapped
+			// by webui.SecondFactorVerified, not a guess from the flow: a
+			// password-only sign-in records false even though it succeeded.
+			session, _, err := manager.StartSession(result.Subject, result.MFAVerified, time.Now())
 			if err != nil {
 				log.Printf("sign-in could not start a session: %v", err)
 				http.Redirect(w, r, "/login", http.StatusFound)

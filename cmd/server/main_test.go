@@ -779,7 +779,10 @@ func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 	}
 
 	// 2. The provider redirects back with a code. The stub mints an id_token
-	//    carrying the flow's nonce, which is what real Zitadel does.
+	//    carrying the flow's nonce, which is what real Zitadel does, along
+	//    with the authentication-method references real Zitadel mints for a
+	//    password+TOTP sign-in (observed live 7 November 2026).
+	provider.setAuthMethods([]string{"pwd", "otp", "mfa"})
 	provider.issueCode("code-1", nonce)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state+"&code=code-1", nil))
@@ -805,6 +808,16 @@ func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 		t.Errorf("session count = %d, want %d: a completed sign-in creates exactly one", after, before+1)
 	}
 
+	// The session the callback created records the provider's second-factor
+	// assertion: the token said pwd+otp+mfa, so the session must say MFA was
+	// verified. This is the wire from provider claim to session fact, proved
+	// over the real handler chain.
+	if session, err := mgr.Verify(sessionCookie.Value, time.Now()); err != nil {
+		t.Fatalf("the freshly signed-in session does not verify: %v", err)
+	} else if !session.MFAVerified {
+		t.Error("a token carrying amr pwd+otp+mfa produced a session with MFAVerified=false: the second factor was dropped on the floor")
+	}
+
 	// 3. That cookie opens the console. "/" is the overview, which needs a
 	//    principal with grants, and the stub signs in as a subject the token map
 	//    does not contain -- so the honest assertion is that the session works on
@@ -823,6 +836,66 @@ func TestSignInEndToEndAgainstAStubProvider(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state+"&code=code-1", nil))
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
 		t.Errorf("replayed callback: status=%d location=%q, want 302 /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// The wiring fails closed too: a sign-in whose token names only the first
+// factor succeeds, but the session it creates records no second factor.
+func TestSignInWithoutASecondFactorRecordsNone(t *testing.T) {
+	provider := newStubOIDC(t)
+	provider.subject = "console-user"
+	provider.setAuthMethods([]string{"pwd"})
+
+	env := func(key string) string {
+		switch key {
+		case "GHOSTLIGHT_WEBUI_KEY":
+			return webuiTestKey
+		case "ZITADEL_ISSUER":
+			return provider.issuer
+		case "ZITADEL_CLIENT_ID":
+			return "ghostlight-console"
+		case "ZITADEL_REDIRECT_URI":
+			return provider.issuer + "/auth/callback"
+		default:
+			return ""
+		}
+	}
+	backend := testBackend(map[string]contract.Principal{
+		"console-user": {ID: "console-user", Grants: []string{"org-a"}},
+	})
+	mux, mgr, err := buildMuxWithSessions(env, backend, dodo.NewMemoryStore(), "memory")
+	if err != nil {
+		t.Fatalf("buildMux with a provider: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	authz, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("authorize URL does not parse: %v", err)
+	}
+	provider.issueCode("code-pwd", authz.Query().Get("nonce"))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/auth/callback?state="+authz.Query().Get("state")+"&code=code-pwd", nil))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("callback status = %d, want 303", rec.Code)
+	}
+	var cookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == webui.CookieName && c.Value != "" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("a password-only sign-in is still a successful sign-in and must set a cookie")
+	}
+	session, err := mgr.Verify(cookie.Value, time.Now())
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if session.MFAVerified {
+		t.Error("a token whose amr names only pwd recorded a verified second factor")
 	}
 }
 
