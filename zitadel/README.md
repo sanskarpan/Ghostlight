@@ -107,6 +107,11 @@ one `start-from-init` service and mounts **no** init scripts.
 
 ## Registering the console as an OIDC client
 
+**Verified live 6 November 2026.** A real application was created in this
+instance and a browser signed in through it into the console. The five clicks
+below are what was actually done, and the notes record what the live run
+taught that the docs did not.
+
 The console's sign-in (`FE-2`, `internal/webui/oidc.go`) needs an application
 registered in this instance. It is a one-time step in the console, done as the
 human admin — a machine user cannot create it without project membership, and
@@ -135,6 +140,25 @@ go run ./cmd/server
 
 `ZITADEL_CLIENT_SECRET` is optional: a PKCE web app does not need one, and
 leaving it unset is the correct configuration for this client type.
+
+### What the live run established (6 November 2026)
+
+- **The console and the identity provider must share a site.** Chrome treats
+  `localhost` and `127.0.0.1` as different sites. A console served on
+  `127.0.0.1:8199` with Zitadel on `localhost:8080` produced a redirect loop:
+  the callback set a `SameSite=Lax` cookie that the browser did not send on the
+  next navigation, so every page saw an unauthenticated browser. Register
+  `http://localhost:8199/auth/callback` (not `127.0.0.1`) and run the console on
+  `localhost` when the provider is there.
+- **The redirect URI must be committed with the `+` button, then saved.** Typing
+  into the field and pressing Save does not add it; the field is an input, not
+  the list. The live run failed with `The requested redirect_uri is missing in
+  the client configuration` until the `+` was used.
+- **The session's subject is Zitadel's numeric user ID, not the login name.** A
+  token for `admin@ghostlight.localhost` carries `sub=397722362466336772`. Any
+  principal map keyed by login name will find no principal and every page will
+  redirect to sign-in with the session valid in the database — a confusing
+  failure, because sign-in genuinely succeeded.
 
 With those unset, `/login` serves an explanation page with `503` rather than a
 broken form — the console still runs, it just cannot sign anyone in. That is

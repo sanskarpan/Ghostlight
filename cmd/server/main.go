@@ -361,6 +361,13 @@ func consoleRoot(backend *api.Server, transport *webui.Transport, session http.H
 			return
 		}
 		switch {
+		case r.URL.Path == "/login" || r.URL.Path == "/auth/callback":
+			// Before every authenticated route: sign-in is how a browser
+			// *acquires* a session, so it cannot require one. When no provider is
+			// configured, signIn is the explanation handler; when one is, it is
+			// the flow. Either way the route belongs here, not in the default,
+			// which is session-guarded.
+			session.ServeHTTP(w, r)
 		case r.URL.Path == "/env/new":
 			// Before the /env/ prefix: the create form is its own page, and a
 			// prefix match would send it to the detail handler as an id.
@@ -576,7 +583,7 @@ func signIn(getenv func(string) string, transport *webui.Transport, manager *ide
 			}
 			// A provider-reported error is a refused sign-in, not a crash.
 			if e := r.URL.Query().Get("error"); e != "" {
-				log.Printf("sign-in refused by provider: %s", e)
+				log.Printf("sign-in refused by provider: %s (%s)", e, r.URL.Query().Get("error_description"))
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}

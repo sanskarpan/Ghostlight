@@ -285,6 +285,9 @@ func (f *Flow) exchange(ctx context.Context, code, verifier string) (string, err
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
+		// The provider's own error is deliberately not surfaced: it names the
+		// client, the redirect URI and the grant, which is a diagnostic for the
+		// deployment and not for a visitor.
 		return "", ErrExchange
 	}
 	var token struct {
