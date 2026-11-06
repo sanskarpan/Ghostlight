@@ -21,11 +21,22 @@
 // breaks browsers or confuses API clients.
 //
 // The fourth rule is that **the cookie is configured, not defaulted.** HttpOnly,
-// Secure and SameSite=Lax are set explicitly on every write, and Secure follows
-// the request's actual scheme: TLS directly, or the X-Forwarded-Proto that a
+// Secure and SameSite are set explicitly on every write, and Secure follows the
+// request's actual scheme: TLS directly, or the X-Forwarded-Proto that a
 // TLS-terminating proxy such as Render sets. A locally served plain-HTTP cookie
 // stays non-Secure so local development still works; the test suite pins every
 // attribute either way.
+//
+// The fifth rule is that **SameSite follows how the console is reached, and the
+// identity provider must share its site.** A live Zitadel test at
+// `localhost:8080` returning to a console at `127.0.0.1:8199` failed with a
+// redirect loop: Chrome treats those as different sites, so a Lax cookie set by
+// the cross-site callback is not sent on the next same-origin navigation, and
+// the console sees an unauthenticated browser. When the IdP is a different site
+// the cookie must be SameSite=None, which browsers require to be Secure. The
+// deployment rule is therefore: serve the console and the IdP from one site
+// (one hostname, or sibling subdomains) and keep Lax; only a deployment that
+// genuinely cannot do that should set SameSite=None, and only over TLS.
 package webui
 
 import (
