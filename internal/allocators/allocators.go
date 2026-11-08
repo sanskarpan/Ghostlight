@@ -208,6 +208,15 @@ func AllocatePostgres(r Request) (Plan, error) {
 // have no per-user memory quota — stated, not hidden — so the key-count bound is
 // enforced by the application watchdog, and the ACL carries the commands the preview
 // needs and nothing else.
+//
+// Two grants the plan deliberately does NOT make, both measured against
+// Valkey 8.1 in the GQ.6 harness (8 Nov 2026): `+keys`, because the engine
+// does not filter KEYS output by the ACL key pattern — a granted KEYS returned
+// sibling keyspace names in full — and `+@connection` as a category, because
+// it carries CLIENT LIST, which enumerates every other tenant's connections
+// with their addresses and authenticated user names. A preview addresses its
+// own keys by name and never enumerates the shared server; the connection
+// grants are the narrow subcommands a client needs to stay connected.
 func AllocateRedis(r Request) (Plan, error) {
 	if r.EnvironmentID == "" {
 		return Plan{}, fmt.Errorf("%w: redis allocation", ErrMissingIdentity)
@@ -221,11 +230,16 @@ func AllocateRedis(r Request) (Plan, error) {
 		Kind: KindRedis, EnvironmentID: r.EnvironmentID, LogicalKey: r.LogicalKey,
 		CredentialRef: "secret://ghostlight/" + r.EnvironmentID + "/redis/" + r.LogicalKey,
 		Statements: []string{
-			fmt.Sprintf("ACL SETUSER %s on -@all +@connection +get +set +del +expire +ttl +exists +incr +decr +mget +mset +keys resetkeys ~%s", user, pattern),
+			fmt.Sprintf("ACL SETUSER %s on -@all +ping +echo +reset +select +client|setname +client|getname +client|id +get +set +del +expire +ttl +exists +incr +decr +mget +mset resetkeys ~%s", user, pattern),
 			fmt.Sprintf("CLIENT SETNAME %s", user),
 		},
 		DestroyStatements: []string{
-			fmt.Sprintf("UNLINK %s", pattern),
+			// SCAN-DELETE is the applier's loop: SCAN with MATCH over the
+			// pattern, UNLINK per page, until the cursor returns to zero. It
+			// is a loop, not a statement, because UNLINK takes key names and
+			// a pattern is not a key — the previous `UNLINK <pattern>` shape
+			// could never execute.
+			fmt.Sprintf("SCAN-DELETE %s", pattern),
 			fmt.Sprintf("ACL DELUSER %s", user),
 		},
 	}
@@ -255,6 +269,13 @@ func AllocateKafka(r Request) (Plan, error) {
 		Statements: []string{
 			fmt.Sprintf("CREATE TOPIC %s%s WITH retention.ms=86400000", prefix, r.LogicalKey),
 			fmt.Sprintf("ACL ALLOW %s DESCRIBE,READ,WRITE,CREATE ON PREFIXED %s", principal, prefix),
+			// A consumer joins a group, and reading through a group needs
+			// READ on the group resource in the group namespace — a plan
+			// without it mints a topic the preview can produce to but never
+			// consume from, which the GQ.6 harness found live (8 Nov 2026):
+			// the consume failed with a group authorization refusal while
+			// the topic ACLs were in place.
+			fmt.Sprintf("ACL ALLOW %s READ ON GROUP PREFIXED %s", principal, prefix),
 			fmt.Sprintf("QUOTA %s producer_byte_rate=%d consumer_byte_rate=%d", principal,
 				r.Bounds.MaxProduceBytesPerSec, r.Bounds.MaxConsumeBytesPerSec),
 		},

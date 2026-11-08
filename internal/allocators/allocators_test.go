@@ -88,6 +88,13 @@ func TestInjectionPrimitivesBecomeUnderscores(t *testing.T) {
 }
 
 // TestRedisACLIsScopedToItsPrefix.
+//
+// The negatives here are measured, not stylistic (GQ.6 harness, Valkey 8.1):
+// KEYS output is NOT filtered by the ACL key pattern, so granting `+keys`
+// leaks sibling key names; and `@connection` carries CLIENT LIST, which
+// enumerates other tenants' connections. Both grants are refused by this
+// test, and the destroy shape is a SCAN-DELETE loop because UNLINK takes key
+// names, not patterns.
 func TestRedisACLIsScopedToItsPrefix(t *testing.T) {
 	p, err := allocators.Allocate(request(allocators.KindRedis))
 	if err != nil {
@@ -102,6 +109,22 @@ func TestRedisACLIsScopedToItsPrefix(t *testing.T) {
 	}
 	if strings.Contains(joined, "FLUSHALL") || strings.Contains(joined, "+@all") {
 		t.Fatalf("the ACL must not grant administrative commands, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "+keys") {
+		t.Fatalf("the ACL must not grant KEYS: the engine does not filter its output by key pattern, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "+@connection") {
+		t.Fatalf("the ACL must not grant the connection category: it carries CLIENT LIST, which enumerates other tenants, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "+scan") {
+		t.Fatalf("the ACL must not grant SCAN: the cursor form of the same enumeration leak, got:\n%s", joined)
+	}
+	destroyed := strings.Join(p.DestroyStatements, "\n")
+	if !strings.Contains(destroyed, "SCAN-DELETE preview-env-1:*") {
+		t.Fatalf("destroy must delete the keyspace by the applier's SCAN-DELETE loop, got:\n%s", destroyed)
+	}
+	if strings.Contains(destroyed, "UNLINK preview-env-1:*") {
+		t.Fatalf("destroy must not pass a pattern to UNLINK: a pattern is not a key, got:\n%s", destroyed)
 	}
 }
 
