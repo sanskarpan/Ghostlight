@@ -17,6 +17,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/attestations"
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/costmodel"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
 	"github.com/sanskarpan/Ghostlight/internal/experiments"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
@@ -595,6 +596,16 @@ func TestTheRetryGuidanceIsHonest(t *testing.T) {
 	}
 }
 
+// priceTable loads the captured price reference dataset the repo carries.
+func priceTable(t *testing.T) *costmodel.Table {
+	t.Helper()
+	tbl, err := costmodel.Load("../catalog/pricing/aws-us-east-1.json")
+	if err != nil {
+		t.Fatalf("price dataset: %v", err)
+	}
+	return tbl
+}
+
 // attestationAuthority builds the signing authority the attestations route
 // reads, bound to the test's clock.
 func attestationAuthority(t *testing.T, now time.Time) *attestations.Authority {
@@ -641,6 +652,8 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "experiment get", Scope: "repo:acme", Permission: "environment:read"})
 	add(contract.Operation{ID: "attestations.get", Method: contract.MethodGet, Path: "/attestations/{id}",
 		CLIName: "attestation get", Scope: "repo:acme", Permission: "environment:read"})
+	add(contract.Operation{ID: "environments.costs", Method: contract.MethodGet, Path: "/environments/{id}/costs",
+		CLIName: "environment costs", Scope: "repo:acme", Permission: "environment:read"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -658,6 +671,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Exceptions:   exceptions.NewStore(func() time.Time { return now }),
 		Experiments:  experiments.NewStore(func() time.Time { return now }, nil),
 		Attestations: attestationAuthority(t, now),
+		PriceTable:   priceTable(t),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -1574,5 +1588,72 @@ func TestAnUnknownAttestationAnswers404(t *testing.T) {
 	got := do(t, s, http.MethodGet, "/v1/attestations/att-none", "token-ada", "", nil)
 	if got.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", got.Code)
+	}
+}
+
+// TestCostsAreAForecastWithAHonestZero: the estimate is the environment's
+// own remaining lifetime against the captured prices, the fixed floor is
+// attributed per preview, and confirmed is a stated zero — no billing
+// actuals are wired, and a zero that said confirmed would be a lie with a
+// number on it.
+func TestCostsAreAForecastWithAHonestZero(t *testing.T) {
+	s, store := createServer(t)
+	created := store.Add(Environment{
+		ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1,
+		ExpiresAt:       now.Add(12 * time.Hour),
+		ResourceProfile: "preview-small",
+	})
+	_ = created
+	rec := do(t, s, http.MethodGet, "/v1/environments/env-1/costs", "token-ada", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Estimated struct {
+			Total float64 `json:"total"`
+			Lines []struct {
+				Item string  `json:"item"`
+				USD  float64 `json:"usd"`
+			} `json:"lines"`
+		} `json:"estimated"`
+		Fixed struct {
+			PerPreview float64 `json:"per_preview"`
+		} `json:"fixed_attribution"`
+		Ceiling struct {
+			CustomerCeiling float64 `json:"customer_ceiling"`
+		} `json:"ceiling"`
+		Confirmed struct {
+			Total float64 `json:"total"`
+			Note  string  `json:"note"`
+		} `json:"confirmed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Estimated.Total <= 0 || len(out.Estimated.Lines) == 0 {
+		t.Fatalf("the estimate is empty: %+v", out.Estimated)
+	}
+	for _, line := range out.Estimated.Lines {
+		if line.USD < 0 {
+			t.Errorf("a negative cost line: %+v", line)
+		}
+	}
+	if out.Fixed.PerPreview <= 0 {
+		t.Error("the fixed attribution is zero; the foundation floor must appear")
+	}
+	if out.Ceiling.CustomerCeiling <= out.Estimated.Total {
+		t.Errorf("the published ceiling (%f) does not bound the estimate (%f)", out.Ceiling.CustomerCeiling, out.Estimated.Total)
+	}
+	if out.Confirmed.Total != 0 || !strings.Contains(out.Confirmed.Note, "no billing actuals") {
+		t.Errorf("confirmed = %+v; the zero must be stated with its reason", out.Confirmed)
+	}
+}
+
+// TestCostsForAnUnknownEnvironmentAnswer404.
+func TestCostsForAnUnknownEnvironmentAnswer404(t *testing.T) {
+	s, _ := createServer(t)
+	rec := do(t, s, http.MethodGet, "/v1/environments/env-nope/costs", "token-ada", "", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
