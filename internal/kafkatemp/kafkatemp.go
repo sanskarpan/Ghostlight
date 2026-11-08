@@ -126,7 +126,7 @@ func Start(t *testing.T) Container {
 		" --cluster-id 5L6g3nShT-eMCtK--X86sw" +
 		" --config /mnt/config/server.properties --ignore-formatted" +
 		" && exec /opt/kafka/bin/kafka-server-start.sh /mnt/config/server.properties"
-	args := []string{"run", "-d", "--rm", "--name", name,
+	args := []string{"run", "-d", "--name", name,
 		"-e", "KAFKA_HEAP_OPTS=-Xmx512m",
 		"-e", "KAFKA_OPTS=-Djava.security.auth.login.config=/etc/kafka/secrets/jaas.conf",
 		"-v", propsPath + ":/mnt/config/server.properties:ro",
@@ -136,6 +136,8 @@ func Start(t *testing.T) Container {
 	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
+	// No --rm: a broker that crashes at start must keep its logs until the
+	// harness has read them. Cleanup removes whatever is left.
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
 
 	c := Container{Name: name}
@@ -148,14 +150,20 @@ func Start(t *testing.T) Container {
 		} else {
 			lastErr = err
 		}
+		// A dead container will not recover: `--rm` removes it the moment it
+		// exits, so a missing container means the broker crashed at start.
+		// Retrying a corpse only burns the caller's time; the logs are the
+		// diagnosis and they go into the failure now.
+		state, _ := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "--format",
+			"{{.Names}} {{.Status}}").CombinedOutput()
+		if !strings.Contains(string(state), name) {
+			break
+		}
 		time.Sleep(2 * time.Second)
 	}
-	// A broker that never came up is diagnosable: its logs are the reason.
 	logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
-	state, _ := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "--format",
-		"{{.Names}} {{.Status}}").CombinedOutput()
-	t.Fatalf("kafka container never became ready: %v\ncontainer state: %s\nbroker logs (tail):\n%s",
-		lastErr, strings.TrimSpace(string(state)), tail(string(logs), 4000))
+	t.Fatalf("kafka container never became ready: %v\nbroker logs (tail):\n%s",
+		lastErr, tail(string(logs), 6000))
 	return c
 }
 
