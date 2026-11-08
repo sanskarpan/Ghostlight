@@ -15,6 +15,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
+	"github.com/sanskarpan/Ghostlight/internal/experiments"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
@@ -223,6 +224,9 @@ type Server struct {
 	// Exceptions is the exception store. Unset means this deployment does not
 	// serve the exceptions route.
 	Exceptions *exceptions.Store
+	// Experiments is the experiment-run store. Unset means this deployment
+	// does not serve the experiments routes.
+	Experiments *experiments.Store
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -302,6 +306,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.getGateRun(w, r, principal, segments[2], requestID)
 	case len(segments) == 2 && segments[0] == "v1" && segments[1] == "exceptions" && r.Method == http.MethodPost:
 		s.grantException(w, r, principal, body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "experiments" && r.Method == http.MethodPost:
+		s.requestExperiment(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "experiments" && segments[3] == "abort" && r.Method == http.MethodPost:
+		s.abortExperiment(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "experiments" && r.Method == http.MethodGet:
+		s.getExperiment(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -835,6 +845,127 @@ func (s *Server) grantException(w http.ResponseWriter, r *http.Request, principa
 		return
 	}
 	s.write(w, r, http.StatusCreated, rec, requestID)
+}
+
+// experimentBody names the catalog profile and its bounded parameters. The
+// body names NO target: the target is the environment the request is
+// authorized against, derived server-side, because an experiment parameter
+// cannot override the target's ownership.
+type experimentBody struct {
+	Profile string         `json:"profile"`
+	Params  map[string]int `json:"parameters"`
+}
+
+// requestExperiment serves POST /v1/environments/{id}/experiments: a
+// catalog profile plus bounded parameters against this environment and
+// nothing else — the blast radius is one environment, and it is not a
+// client's choice.
+func (s *Server) requestExperiment(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Experiments == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an experiment store", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeMutation("environments.experiments.request", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	var in experimentBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the experiment shape", requestID)
+		return
+	}
+	run, err := s.Experiments.Request(env.ID, env.Scope, in.Profile, in.Params)
+	if err != nil {
+		s.fail(w, r, CodeUnprocessable, err.Error(), requestID)
+		return
+	}
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"run_id":     run.ID,
+		"state":      string(run.State),
+		"profile":    run.Profile,
+		"parameters": run.Params,
+		"status_url": "/v1/experiments/" + run.ID,
+	}, requestID)
+}
+
+// abortBody carries the visible reason.
+type abortBody struct {
+	Reason string `json:"reason"`
+}
+
+// abortExperiment serves POST /v1/experiments/{run_id}/abort: idempotent
+// fault removal. Aborting an aborted run returns the same record, because a
+// retried abort is the same intent, not a second fault. Recovery
+// verification is not claimed: the record says "aborted", and the recovery
+// statement belongs to the injector that would have run the fault.
+func (s *Server) abortExperiment(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Experiments == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an experiment store", requestID)
+		return
+	}
+	run, err := s.Experiments.Get(id)
+	if err != nil {
+		s.fail(w, r, CodeNotFound, "no such experiment run", requestID)
+		return
+	}
+	// The abort is a mutation of the run's record, so the full contract
+	// applies against the run's own resource: idempotency key, body digest,
+	// and a precondition on the record as it exists (version 1 — a run's
+	// only transition is to aborted).
+	sum := sha256.Sum256(body)
+	req := contract.Request{
+		Principal:      &principal,
+		Resource:       contract.Resource{ID: run.ID, Scope: run.Scope, Version: 1},
+		IdempotencyKey: r.Header.Get(IdempotencyHeader),
+		BodyDigest:     hex.EncodeToString(sum[:]),
+	}
+	if raw := r.Header.Get(PreconditionHeader); raw != "" {
+		version, convErr := strconv.Atoi(strings.Trim(raw, `"`))
+		if convErr != nil {
+			s.fail(w, r, CodeInvalid, "If-Match must be the run's resource version", requestID)
+			return
+		}
+		req.Precondition = version
+	}
+	if err := s.Authorizer.Authorize("experiments.abort", req, s.now()); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	var in abortBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the abort shape", requestID)
+		return
+	}
+	aborted, err := s.Experiments.Abort(id, in.Reason)
+	if err != nil {
+		s.fail(w, r, CodeUnprocessable, err.Error(), requestID)
+		return
+	}
+	s.write(w, r, http.StatusOK, aborted, requestID)
+}
+
+// getExperiment serves GET /v1/experiments/{run_id}: the run's state,
+// targets, parameters and (empty until an agent exists) results.
+func (s *Server) getExperiment(w http.ResponseWriter, r *http.Request, principal contract.Principal, id, requestID string) {
+	if s.Experiments == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an experiment store", requestID)
+		return
+	}
+	run, err := s.Experiments.Get(id)
+	if err != nil {
+		s.fail(w, r, CodeNotFound, "no such experiment run", requestID)
+		return
+	}
+	if err := s.authorizeScope("experiments.get", principal, run.Scope); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	s.write(w, r, http.StatusOK, run, requestID)
 }
 
 // githubWebhook serves POST /v1/integrations/github/events: exact-byte
