@@ -583,3 +583,209 @@ func TestTheRetryGuidanceIsHonest(t *testing.T) {
 		}
 	}
 }
+
+// createServer builds a server wired for the lifecycle family: an empty
+// store, the creator and destroyer capabilities installed, and the operations
+// the family needs declared.
+func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
+	t.Helper()
+	var ops contract.Registry
+	var err error
+	add := func(op contract.Operation) {
+		ops, err = ops.Register(op)
+		if err != nil {
+			t.Fatalf("Register(%q): %v", op.ID, err)
+		}
+	}
+	add(contract.Operation{ID: "environments.destroy", Method: contract.MethodPost, Path: "/environments/{id}/destroy",
+		CLIName: "environment destroy", Scope: "repo:acme", Permission: "environment:write"})
+	store := &MemoryEnvironments{}
+	s := &Server{
+		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
+			"token-ada":     {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:write"}},
+			"token-nogrant": {ID: "noa", Grants: nil, Permissions: []string{"environment:write"}},
+		}},
+		Operations:   ops,
+		Authorizer:   &contract.Authorizer{Registry: ops},
+		Environments: store,
+		Creator:      store,
+		Destroyer:    store,
+		Now:          func() time.Time { return now },
+	}
+	return s, store
+}
+
+const validCreateBody = `{"repository_id":12345,"pull_request_number":142,
+"source_sha":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+"recipe_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+"configuration_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+"resource_profile":"preview-small","requested_ttl_seconds":86400}`
+
+// TestCreateEnvironmentAnswersAcceptedWithIdentity: the §1 contract — a
+// 202 carrying the immutable identity and the status URL, never secret values.
+func TestCreateEnvironmentAnswersAcceptedWithIdentity(t *testing.T) {
+	s, store := createServer(t)
+	rec := do(t, s, http.MethodPost, "/v1/environments", "token-ada", validCreateBody,
+		map[string]string{"Idempotency-Key": "key-1"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		EnvironmentID string `json:"environment_id"`
+		Slug          string `json:"slug"`
+		Generation    int    `json:"generation"`
+		StatusURL     string `json:"status_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.EnvironmentID == "" || out.Slug == "" || out.Generation != 1 {
+		t.Fatalf("identity = %+v", out)
+	}
+	if out.StatusURL != "/v1/environments/"+out.EnvironmentID {
+		t.Errorf("status_url = %q, want the environment's own path", out.StatusURL)
+	}
+	env, ok := store.Get(out.EnvironmentID)
+	if !ok {
+		t.Fatal("the store does not hold the created environment")
+	}
+	if env.Scope != "repo:acme" {
+		t.Errorf("scope = %q, want the caller's own grant (derived server-side)", env.Scope)
+	}
+	if !env.ExpiresAt.Equal(now.Add(86400 * time.Second)) {
+		t.Errorf("expires_at = %v, want the requested TTL from the server's clock", env.ExpiresAt)
+	}
+}
+
+// TestCreateEnvironmentReplaysIdempotently: the same key with the same body
+// returns the first result; the same key with a different body is a refused
+// retry, not a second creation.
+func TestCreateEnvironmentReplaysIdempotently(t *testing.T) {
+	s, _ := createServer(t)
+	first := do(t, s, http.MethodPost, "/v1/environments", "token-ada", validCreateBody,
+		map[string]string{"Idempotency-Key": "key-1"})
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first: %d", first.Code)
+	}
+	replay := do(t, s, http.MethodPost, "/v1/environments", "token-ada", validCreateBody,
+		map[string]string{"Idempotency-Key": "key-1"})
+	if replay.Code != http.StatusAccepted {
+		t.Fatalf("replay: %d", replay.Code)
+	}
+	if replay.Body.String() != first.Body.String() {
+		t.Errorf("a replay must return the first result, got %s vs %s", replay.Body.String(), first.Body.String())
+	}
+	other := do(t, s, http.MethodPost, "/v1/environments", "token-ada",
+		strings.Replace(validCreateBody, "142", "143", 1),
+		map[string]string{"Idempotency-Key": "key-1"})
+	if other.Code != http.StatusConflict {
+		t.Fatalf("same key with a different body: %d, want 409", other.Code)
+	}
+}
+
+// TestCreateEnvironmentValidatesTheRequestShape: values are assertions to
+// validate. A digest that does not parse pins nothing; a TTL outside the
+// platform's bounds is a client preference, not policy.
+func TestCreateEnvironmentValidatesTheRequestShape(t *testing.T) {
+	s, _ := createServer(t)
+	cases := map[string]string{
+		"bad source sha":      strings.Replace(validCreateBody, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "zzz", 1),
+		"bad recipe digest":   strings.Replace(validCreateBody, `"recipe_digest":"sha256:aaaa`, `"recipe_digest":"sha512:aaaa`, 1),
+		"unknown profile":     strings.Replace(validCreateBody, "preview-small", "gpu-monster", 1),
+		"ttl over the bound":  strings.Replace(validCreateBody, "86400", "864000", 1),
+		"ttl under the bound": strings.Replace(validCreateBody, "86400", "10", 1),
+		"no repository":       strings.Replace(validCreateBody, `"repository_id":12345`, `"repository_id":0`, 1),
+	}
+	for name, body := range cases {
+		rec := do(t, s, http.MethodPost, "/v1/environments", "token-ada", body,
+			map[string]string{"Idempotency-Key": "key-" + name})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: status = %d, want 422 (body: %s)", name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"unprocessable"`) {
+			t.Errorf("%s: problem code is not unprocessable: %s", name, rec.Body.String())
+		}
+	}
+	missing := do(t, s, http.MethodPost, "/v1/environments", "token-ada", validCreateBody, nil)
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "Idempotency-Key") {
+		t.Errorf("a create without an idempotency key: %d %s", missing.Code, missing.Body.String())
+	}
+}
+
+// TestCreateEnvironmentQuotaAnswers429: §5 reserves 429 for quota, and the
+// code must say quota, not a generic refusal.
+func TestCreateEnvironmentQuotaAnswers429(t *testing.T) {
+	s, _ := createServer(t)
+	first := do(t, s, http.MethodPost, "/v1/environments", "token-ada", validCreateBody,
+		map[string]string{"Idempotency-Key": "key-1"})
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first create: %d", first.Code)
+	}
+	second := do(t, s, http.MethodPost, "/v1/environments", "token-ada",
+		strings.Replace(validCreateBody, "142", "143", 1),
+		map[string]string{"Idempotency-Key": "key-2"})
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second create: %d, want 429", second.Code)
+	}
+	if !strings.Contains(second.Body.String(), `"quota"`) {
+		t.Errorf("the problem code must be quota: %s", second.Body.String())
+	}
+}
+
+// TestCreateEnvironmentRefusesACredentialWithNoGrants: the scope is the
+// caller's own grant; a credential with none owns no scope for an
+// environment to belong to.
+func TestCreateEnvironmentRefusesACredentialWithNoGrants(t *testing.T) {
+	s, _ := createServer(t)
+	rec := do(t, s, http.MethodPost, "/v1/environments", "token-nogrant", validCreateBody,
+		map[string]string{"Idempotency-Key": "key-1"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+// TestDestroyEnvironmentSetsDesiredAbsent: a 202 whose follow-up GET answers
+// 404 — gone, not flagged.
+func TestDestroyEnvironmentSetsDesiredAbsent(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 3, Generation: 1})
+
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/destroy", "token-ada", "",
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "3"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if _, ok := store.Get("env-1"); ok {
+		t.Fatal("the destroyed environment is still in the store")
+	}
+	after := do(t, s, http.MethodGet, "/v1/environments/env-1", "token-ada", "", nil)
+	if after.Code != http.StatusNotFound {
+		t.Errorf("GET after destroy: %d, want 404 — gone says gone", after.Code)
+	}
+}
+
+// TestDestroyRequiresPreconditionAndKey: the §1 contract — mutations are
+// idempotent and conditional, and the refusal for a stale version is 409.
+func TestDestroyRequiresPreconditionAndKey(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 3, Generation: 1})
+
+	noKey := do(t, s, http.MethodPost, "/v1/environments/env-1/destroy", "token-ada", "",
+		map[string]string{"If-Match": "3"})
+	if noKey.Code != http.StatusBadRequest {
+		t.Errorf("destroy without an idempotency key: %d, want 400", noKey.Code)
+	}
+	stale := do(t, s, http.MethodPost, "/v1/environments/env-1/destroy", "token-ada", "",
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "2"})
+	if stale.Code != http.StatusConflict {
+		t.Errorf("destroy with a stale version: %d, want 409", stale.Code)
+	}
+	if _, ok := store.Get("env-1"); !ok {
+		t.Fatal("a refused destroy removed the environment")
+	}
+	outsider := do(t, s, http.MethodPost, "/v1/environments/env-1/destroy", "token-ada", "",
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "9"})
+	if outsider.Code == http.StatusAccepted {
+		t.Error("a destroy with a wrong version succeeded")
+	}
+}

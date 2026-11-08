@@ -22,7 +22,9 @@ import (
 // POST-only route with GET answers "no such route", which would read as drift
 // when the real defect is the probe.
 var servedRoutes = []string{
+	"POST /v1/environments",
 	"GET /v1/environments/{id}",
+	"POST /v1/environments/{id}/destroy",
 	"GET /v1/environments/{id}/review-threads",
 	"POST /v1/environments/{id}/review-threads",
 	"POST /v1/review-threads/{id}/findings",
@@ -34,7 +36,9 @@ var servedRoutes = []string{
 // drives. A route marked served with no pattern here fails the test, so a route
 // cannot be claimed served and silently untested.
 var servedPatterns = map[string][]string{
+	"POST /v1/environments":                                     {"/v1/environments"},
 	"GET /v1/environments/{id}":                                 {"/v1/environments/env-1"},
+	"POST /v1/environments/{id}/destroy":                        {"/v1/environments/env-1/destroy"},
 	"GET /v1/environments/{id}/review-threads":                  {"/v1/environments/env-1/review-threads"},
 	"POST /v1/environments/{id}/review-threads":                 {"/v1/environments/env-1/review-threads"},
 	"POST /v1/review-threads/{id}/findings":                     {"/v1/review-threads/th-1/findings"},
