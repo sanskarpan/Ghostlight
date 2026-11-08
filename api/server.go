@@ -104,6 +104,29 @@ func (m *MemoryEnvironments) EnvironmentForRequest(requestID string) (Environmen
 	return m.Get(id)
 }
 
+// RememberIdempotentRequest records the body digest an idempotency key was
+// first presented with, alongside the environment it produced. Reuse of the
+// key with a different body is a refused retry, not a second creation.
+func (m *MemoryEnvironments) RememberIdempotentRequest(key, bodyDigest, envID string) {
+	if m.IdempotentRequests == nil {
+		m.IdempotentRequests = map[string]IdempotentRequestRecord{}
+	}
+	m.IdempotentRequests[key] = IdempotentRequestRecord{BodyDigest: bodyDigest, EnvironmentID: envID}
+}
+
+// IdempotentRequest returns what an idempotency key first produced.
+func (m *MemoryEnvironments) IdempotentRequest(key string) (IdempotentRequestRecord, bool) {
+	rec, ok := m.IdempotentRequests[key]
+	return rec, ok
+}
+
+// IdempotentRequestRecord is what the store remembers about one idempotency
+// key: the exact body it first carried, and the environment that body created.
+type IdempotentRequestRecord struct {
+	BodyDigest    string
+	EnvironmentID string
+}
+
 // MemoryEnvironments is an in-memory environment store.
 type MemoryEnvironments struct {
 	// Environments are the stored environments.
@@ -111,6 +134,9 @@ type MemoryEnvironments struct {
 	// RequestEnvironments maps a create request's idempotency id to the
 	// environment it produced, so a retried form returns the first result.
 	RequestEnvironments map[string]string
+	// IdempotentRequests maps an API idempotency key to the body digest it
+	// first carried and the environment it produced.
+	IdempotentRequests map[string]IdempotentRequestRecord
 }
 
 // All returns every stored environment.
@@ -141,12 +167,27 @@ type Server struct {
 	Authorizer *contract.Authorizer
 	// Environments is the environment store.
 	Environments Environments
+	// Creator is the write half of the environment store. Unset means this
+	// deployment does not serve environment creation, and the route refuses
+	// rather than guessing a store.
+	Creator Creator
+	// Destroyer removes an environment from the store. Unset means this
+	// deployment does not serve environment destruction, and the route
+	// refuses rather than guessing a store.
+	Destroyer Destroyer
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
 	Passports *passport.Registry
 	// Now supplies the current moment.
 	Now func() time.Time
+}
+
+// Destroyer is the store capability destroy needs: the environment leaves the
+// store rather than being flagged, so acting on it again is a 404 — which
+// says "gone" more honestly than a second success would.
+type Destroyer interface {
+	Remove(id string)
 }
 
 // now returns the server's current moment.
@@ -183,8 +224,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	segments := splitPath(r.URL.Path)
 	switch {
+	case len(segments) == 2 && segments[0] == "v1" && segments[1] == "environments" && r.Method == http.MethodPost:
+		s.createEnvironment(w, r, principal, body, requestID)
 	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "environments" && r.Method == http.MethodGet:
 		s.getEnvironment(w, r, principal, segments[2], requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "destroy" && r.Method == http.MethodPost:
+		s.destroyEnvironment(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
 		s.listReviewThreads(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodPost:
@@ -221,6 +266,213 @@ type environmentView struct {
 	Generation int              `json:"generation"`
 	ExpiresAt  time.Time        `json:"expires_at"`
 	Timeline   console.Timeline `json:"timeline"`
+}
+
+// createEnvironmentBody is the §2 environment request shape: references and
+// bounded values only. Every field is an assertion to validate, never
+// authority — the actor and the scope are derived server-side, and the
+// digests are checked for shape because a digest that does not parse cannot
+// pin anything.
+type createEnvironmentBody struct {
+	RepositoryID        int64  `json:"repository_id"`
+	PullRequestNumber   int    `json:"pull_request_number"`
+	SourceSHA           string `json:"source_sha"`
+	RecipeDigest        string `json:"recipe_digest"`
+	ConfigurationDigest string `json:"configuration_digest"`
+	ResourceProfile     string `json:"resource_profile"`
+	RequestedTTLSeconds int    `json:"requested_ttl_seconds"`
+}
+
+// admittedProfiles is the profile catalog this deployment admits. Recipes,
+// profiles and policies are catalog references — a request never carries the
+// thing itself, only a name the catalog must know.
+var admittedProfiles = map[string]bool{"preview-small": true}
+
+// ttlBounds are the platform's bounded TTL policy in seconds.
+const (
+	minTTLSeconds = 300
+	maxTTLSeconds = 86400
+)
+
+// digestShape reports whether s is a "sha256:<64 hex>" digest. A digest that
+// does not parse cannot pin anything, and accepting it would be an assertion
+// recorded as if it were proof.
+func digestShape(s string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(s, prefix) || len(s) != len(prefix)+64 {
+		return false
+	}
+	for _, c := range s[len(prefix):] {
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// shaShape reports whether s is a 40-character lowercase hex SHA-1, the shape
+// of a git commit id.
+func shaShape(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// createEnvironment serves POST /v1/environments: an admitted
+// recipe/candidate/repository request becomes a 202 with the immutable
+// environment identity and the status URL.
+//
+// The scope is derived server-side from the caller's own grants — the
+// environment belongs to the scope the credential names, never to a scope the
+// body asserts. Idempotency is the request-key memory: the same key with the
+// same body returns the first result, and the same key with a different body
+// is a refused retry. The contract's precondition machinery applies to
+// mutations of an existing resource; a create has no resource version to
+// precondition on, so its idempotency lives here, where the first result is
+// remembered.
+func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request, principal contract.Principal, body []byte, requestID string) {
+	if s.Creator == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an environment creator", requestID)
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get(IdempotencyHeader))
+	if key == "" {
+		s.fail(w, r, CodeInvalid, "a create carries an Idempotency-Key header; a retried submission must be recognisable as the same submission", requestID)
+		return
+	}
+	var in createEnvironmentBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the environment request shape", requestID)
+		return
+	}
+	switch {
+	case in.RepositoryID <= 0:
+		s.fail(w, r, CodeUnprocessable, "repository_id must be a positive identifier", requestID)
+		return
+	case in.PullRequestNumber <= 0:
+		s.fail(w, r, CodeUnprocessable, "pull_request_number must be a positive number", requestID)
+		return
+	case !shaShape(in.SourceSHA):
+		s.fail(w, r, CodeUnprocessable, "source_sha must be a 40-character lowercase git sha", requestID)
+		return
+	case !digestShape(in.RecipeDigest), !digestShape(in.ConfigurationDigest):
+		s.fail(w, r, CodeUnprocessable, "recipe_digest and configuration_digest must be sha256:<64 hex> digests; a digest that does not parse pins nothing", requestID)
+		return
+	case !admittedProfiles[in.ResourceProfile]:
+		s.fail(w, r, CodeUnprocessable, "resource_profile must be a catalog profile this deployment admits", requestID)
+		return
+	case in.RequestedTTLSeconds < minTTLSeconds || in.RequestedTTLSeconds > maxTTLSeconds:
+		s.fail(w, r, CodeUnprocessable, fmt.Sprintf("requested_ttl_seconds must be between %d and %d: the platform's TTL is bounded policy, not a client's preference", minTTLSeconds, maxTTLSeconds), requestID)
+		return
+	}
+
+	// The scope is the caller's own grant. A principal with no grants owns no
+	// scope, and an environment must belong to one.
+	scope := ""
+	for _, g := range principal.Grants {
+		if strings.TrimSpace(g) != "" {
+			scope = g
+			break
+		}
+	}
+	if scope == "" {
+		s.fail(w, r, CodeForbidden, "your credential carries no grants, so no scope exists for the environment to belong to", requestID)
+		return
+	}
+
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	if prior, ok := s.Creator.(interface {
+		IdempotentRequest(string) (IdempotentRequestRecord, bool)
+	}); ok {
+		if rec, found := prior.IdempotentRequest(key); found {
+			if rec.BodyDigest != digest {
+				s.fail(w, r, CodeConflict, "this idempotency key was already used with a different body; a retried request must repeat its body exactly", requestID)
+				return
+			}
+			env, ok := s.Environments.Get(rec.EnvironmentID)
+			if !ok {
+				s.fail(w, r, CodeNotFound, "the environment this key created no longer exists", requestID)
+				return
+			}
+			s.writeCreated(w, r, env, requestID)
+			return
+		}
+	}
+
+	// The quota gate is where a real deployment refuses for entitlement. This
+	// deployment admits one running environment per scope, the same decision
+	// the console's form reads.
+	count := 0
+	for _, e := range s.Environments.All() {
+		if e.Scope == scope {
+			count++
+		}
+	}
+	if count >= 1 {
+		s.fail(w, r, CodeQuota, "this deployment allows one running environment per scope, and one is already running", requestID)
+		return
+	}
+
+	created := s.Creator.Add(Environment{
+		ID:         "env-" + newRequestID(),
+		Scope:      scope,
+		Version:    1,
+		Generation: 1,
+		ExpiresAt:  s.now().Add(time.Duration(in.RequestedTTLSeconds) * time.Second),
+	})
+	if rec, ok := s.Creator.(interface {
+		RememberIdempotentRequest(string, string, string)
+	}); ok {
+		rec.RememberIdempotentRequest(key, digest, created.ID)
+	}
+	s.writeCreated(w, r, created, requestID)
+}
+
+// writeCreated writes the 202 create response: the immutable identity and the
+// status URL, never secret values.
+func (s *Server) writeCreated(w http.ResponseWriter, r *http.Request, env Environment, requestID string) {
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"environment_id": env.ID,
+		"slug":           env.ID,
+		"generation":     env.Generation,
+		"status_url":     "/v1/environments/" + env.ID,
+	}, requestID)
+}
+
+// destroyEnvironment serves POST /v1/environments/{id}/destroy: desired
+// absent, with the contract's idempotency key and resource-version
+// precondition enforced by the authorizer. In this in-memory deployment the
+// async draining completes with the removal: a follow-up GET answers 404,
+// which says "gone" more honestly than a second success would.
+func (s *Server) destroyEnvironment(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Destroyer == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an environment destroyer", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeMutation("environments.destroy", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	s.Destroyer.Remove(id)
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"environment_id": id,
+		"state":          "destroying",
+		"status_url":     "/v1/environments/" + id,
+	}, requestID)
 }
 
 // getEnvironment serves the environment's state, progress and expiry.

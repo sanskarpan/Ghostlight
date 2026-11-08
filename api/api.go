@@ -113,6 +113,15 @@ const (
 	CodeForbiddenContent Code = "forbidden-content"
 	// CodeTooLarge means the request exceeded a bound.
 	CodeTooLarge Code = "too-large"
+	// CodeQuota means the caller is entitled to less than the request asks
+	// for. §5 of the contract reserves 429 for quota: retrying without
+	// changing what is held cannot help, so it is not retryable.
+	CodeQuota Code = "quota"
+	// CodeUnprocessable means the request parsed but failed a validation rule
+	// on its values — §5's 422 for invalid recipe, provenance or dependency
+	// declarations. It is distinct from CodeInvalid (a malformed request):
+	// the shape was understood, the values were not acceptable.
+	CodeUnprocessable Code = "unprocessable"
 	// CodeInternal means the server failed unexpectedly.
 	CodeInternal Code = "internal"
 )
@@ -157,6 +166,8 @@ var problemSpecs = map[Code]problemSpec{
 	CodeInvalid:          {status: http.StatusBadRequest, title: "Invalid request"},
 	CodeForbiddenContent: {status: http.StatusUnprocessableEntity, title: "Response cannot be served"},
 	CodeTooLarge:         {status: http.StatusRequestEntityTooLarge, title: "Too large"},
+	CodeQuota:            {status: http.StatusTooManyRequests, title: "Quota exceeded"},
+	CodeUnprocessable:    {status: http.StatusUnprocessableEntity, title: "Unprocessable request"},
 	CodeInternal:         {status: http.StatusInternalServerError, title: "Internal error", retryable: true, retryAfter: 5},
 }
 
@@ -322,12 +333,21 @@ func checkJSON(encoded []byte) error {
 // The shape test is deliberately narrow, because a rule that fires on ordinary text
 // gets disabled. A reference is a digest, a path with a tag, a path with no tag, or a
 // bare lowercase name with a tag. A timestamp is none of those: it has no slash, and
-// its name part starts with a digit, so it is not a name a registry would serve.
+// its name part starts with a digit, so it is not a name a registry would serve. A
+// URL is none of those either: an absolute path starts with a slash, and a scheme
+// carries "://", and no registry reference is shaped like either — a rule that read
+// every slash-carrying string as a registry name would refuse the API's own status
+// URLs.
 //
-// "nginx:latest" and "acme/api:v1" are references. "2026-09-09T12:00:00Z" and "prod"
-// are not.
+// "nginx:latest" and "acme/api:v1" are references. "2026-09-09T12:00:00Z", "prod"
+// and "/v1/environments/env-1" are not.
 func looksLikeImageReference(s string) bool {
 	if s == "" || strings.ContainsAny(s, " \t\n") {
+		return false
+	}
+	if strings.HasPrefix(s, "/") || strings.Contains(s, "://") {
+		// An absolute path or a scheme-bearing URL is the API's own addressing,
+		// not a registry reference.
 		return false
 	}
 	if strings.Contains(s, "@sha256:") {
