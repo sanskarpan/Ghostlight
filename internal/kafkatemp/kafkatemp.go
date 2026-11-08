@@ -127,6 +127,7 @@ func Start(t *testing.T) Container {
 		" --config /mnt/config/server.properties --ignore-formatted" +
 		" && exec /opt/kafka/bin/kafka-server-start.sh /mnt/config/server.properties"
 	args := []string{"run", "-d", "--rm", "--name", name,
+		"-e", "KAFKA_HEAP_OPTS=-Xmx512m",
 		"-e", "KAFKA_OPTS=-Djava.security.auth.login.config=/etc/kafka/secrets/jaas.conf",
 		"-v", propsPath + ":/mnt/config/server.properties:ro",
 		"-v", jaasPath + ":/etc/kafka/secrets/jaas.conf:ro",
@@ -139,7 +140,7 @@ func Start(t *testing.T) Container {
 
 	c := Container{Name: name}
 	var lastErr error
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 90; i++ {
 		cmd := exec.Command("docker", "exec", c.Name, "/opt/kafka/bin/kafka-broker-api-versions.sh",
 			"--bootstrap-server", AdminBootstrap)
 		if err := cmd.Run(); err == nil {
@@ -149,8 +150,25 @@ func Start(t *testing.T) Container {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("kafka container never became ready: %v", lastErr)
+	// A broker that never came up is diagnosable: its logs are the reason.
+	logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+	state, _ := exec.Command("docker", "ps", "-a", "--filter", "name="+name, "--format",
+		"{{.Names}} {{.Status}}").CombinedOutput()
+	t.Fatalf("kafka container never became ready: %v\ncontainer state: %s\nbroker logs (tail):\n%s",
+		lastErr, strings.TrimSpace(string(state)), tail(string(logs), 4000))
 	return c
+}
+
+// tail returns the last n bytes of s, cut at line boundaries where possible.
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[len(s)-n:]
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 // Exec runs a command inside the container and returns combined output. It
