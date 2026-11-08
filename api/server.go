@@ -15,6 +15,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
+	"github.com/sanskarpan/Ghostlight/internal/resource"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
 )
 
@@ -175,6 +176,9 @@ type Server struct {
 	// deployment does not serve environment destruction, and the route
 	// refuses rather than guessing a store.
 	Destroyer Destroyer
+	// Ledger is the resource ledger the safe ownership inventory reads. Unset
+	// means this deployment does not serve the resources route.
+	Ledger resource.Ledger
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -230,6 +234,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.getEnvironment(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "destroy" && r.Method == http.MethodPost:
 		s.destroyEnvironment(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
+		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
 		s.listReviewThreads(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodPost:
@@ -473,6 +479,59 @@ func (s *Server) destroyEnvironment(w http.ResponseWriter, r *http.Request, prin
 		"state":          "destroying",
 		"status_url":     "/v1/environments/" + id,
 	}, requestID)
+}
+
+// resourceView is one allocation's safe ownership view: what the resource is,
+// what state its cleanup is in, and a credential reference that is visibly
+// redacted. The credential itself never appears anywhere in a response, and
+// the ref is shown redacted rather than omitted so a client cannot mistake
+// absence for having been checked.
+type resourceView struct {
+	ID            string            `json:"id"`
+	Kind          string            `json:"kind"`
+	LogicalKey    string            `json:"logical_key"`
+	Generation    uint64            `json:"generation"`
+	State         string            `json:"state"`
+	ProviderRef   map[string]string `json:"provider_ref"`
+	CredentialRef string            `json:"credential_ref"`
+	CreatedAt     time.Time         `json:"created_at"`
+}
+
+// listEnvironmentResources serves GET /v1/environments/{id}/resources: the
+// safe ownership inventory. It is the environment's own allocations and
+// nothing else — a scope-wide or account-wide list is the operator tooling's
+// job, not a customer API's.
+func (s *Server) listEnvironmentResources(w http.ResponseWriter, r *http.Request, principal contract.Principal, id, requestID string) {
+	if s.Ledger == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire a resource ledger", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorize("environments.resources", principal, env); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	allocs, err := s.Ledger.List(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, CodeInternal, "the ownership inventory could not be read", requestID)
+		return
+	}
+	items := make([]resourceView, 0, len(allocs))
+	for _, a := range allocs {
+		items = append(items, resourceView{
+			ID: a.ID, Kind: a.Kind, LogicalKey: a.LogicalKey,
+			Generation:    a.Generation,
+			State:         string(a.State),
+			ProviderRef:   a.ProviderRef,
+			CredentialRef: "[redacted]",
+			CreatedAt:     a.CreatedAt,
+		})
+	}
+	s.write(w, r, http.StatusOK, map[string]any{"items": items}, requestID)
 }
 
 // getEnvironment serves the environment's state, progress and expiry.

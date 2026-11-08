@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
+	"github.com/sanskarpan/Ghostlight/internal/resource"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
 )
 
@@ -599,10 +601,12 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 	}
 	add(contract.Operation{ID: "environments.destroy", Method: contract.MethodPost, Path: "/environments/{id}/destroy",
 		CLIName: "environment destroy", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "environments.resources", Method: contract.MethodGet, Path: "/environments/{id}/resources",
+		CLIName: "environment resources", Scope: "repo:acme", Permission: "environment:read"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
-			"token-ada":     {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:write"}},
+			"token-ada":     {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write"}},
 			"token-nogrant": {ID: "noa", Grants: nil, Permissions: []string{"environment:write"}},
 		}},
 		Operations:   ops,
@@ -610,6 +614,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Environments: store,
 		Creator:      store,
 		Destroyer:    store,
+		Ledger:       resource.NewMemoryLedger(func() time.Time { return now }),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -787,5 +792,78 @@ func TestDestroyRequiresPreconditionAndKey(t *testing.T) {
 		map[string]string{"Idempotency-Key": "key-2", "If-Match": "9"})
 	if outsider.Code == http.StatusAccepted {
 		t.Error("a destroy with a wrong version succeeded")
+	}
+}
+
+// TestResourcesShowOwnershipAndRedactCredentials: the safe inventory answers
+// the environment's own allocations with cleanup state, and the credential
+// reference is visibly redacted — a client must not mistake absence for
+// having been checked.
+func TestResourcesShowOwnershipAndRedactCredentials(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 2})
+	if err := s.Ledger.Record(context.Background(), resource.Allocation{
+		ID: "alloc-1", EnvironmentID: "env-1", Generation: 2,
+		Kind: "database", LogicalKey: "primary",
+		ProviderRef:   map[string]string{"native_id": "nat-db-1"},
+		CredentialRef: "secret://ghostlight/env-1/database/primary",
+		State:         resource.StateActive, CreatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	// Another environment's allocation must not appear in env-1's inventory.
+	if err := s.Ledger.Record(context.Background(), resource.Allocation{
+		ID: "alloc-2", EnvironmentID: "env-other", Generation: 1,
+		Kind: "topic", LogicalKey: "events",
+		ProviderRef: map[string]string{"native_id": "nat-topic-1"},
+		State:       resource.StateActive, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	rec := do(t, s, http.MethodGet, "/v1/environments/env-1/resources", "token-ada", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Items []struct {
+			ID            string            `json:"id"`
+			Kind          string            `json:"kind"`
+			LogicalKey    string            `json:"logical_key"`
+			Generation    uint64            `json:"generation"`
+			State         string            `json:"state"`
+			ProviderRef   map[string]string `json:"provider_ref"`
+			CredentialRef string            `json:"credential_ref"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("items = %d, want only the environment's own allocation", len(out.Items))
+	}
+	item := out.Items[0]
+	if item.ID != "alloc-1" || item.Kind != "database" || item.Generation != 2 || item.State != "active" {
+		t.Errorf("inventory item = %+v", item)
+	}
+	if item.ProviderRef["native_id"] != "nat-db-1" {
+		t.Errorf("provider ref = %v", item.ProviderRef)
+	}
+	if item.CredentialRef != "[redacted]" {
+		t.Errorf("credential_ref = %q, want the visible redaction", item.CredentialRef)
+	}
+	if strings.Contains(rec.Body.String(), "secret://") {
+		t.Error("the response carries a credential reference")
+	}
+}
+
+// TestResourcesOfAnUnknownEnvironmentAnswer404: an inventory is bound to an
+// environment that exists, and the route answers like the other family
+// members do.
+func TestResourcesOfAnUnknownEnvironmentAnswer404(t *testing.T) {
+	s, _ := createServer(t)
+	rec := do(t, s, http.MethodGet, "/v1/environments/env-nope/resources", "token-ada", "", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
