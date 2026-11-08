@@ -15,6 +15,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/attestations"
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/costmodel"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
 	"github.com/sanskarpan/Ghostlight/internal/experiments"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
@@ -44,6 +45,10 @@ type Environment struct {
 	SourceSHA           string
 	RecipeDigest        string
 	ConfigurationDigest string
+	// ResourceProfile is the catalog profile the create admitted. The costs
+	// answer is computed against this profile; a console-created environment
+	// carries the deployment's default.
+	ResourceProfile string
 	// Actions are the recorded actions the progress timeline is derived from.
 	//
 	// The timeline is not derivable from the lifecycle state, and the console
@@ -231,6 +236,11 @@ type Server struct {
 	// Attestations is the platform's signing authority. Unset means this
 	// deployment does not serve the attestations route.
 	Attestations *attestations.Authority
+	// PriceTable is the captured price reference the costs answer is
+	// computed from. Unset means this deployment does not serve the costs
+	// route: a forecast computed without prices would be a number pretending
+	// to be a bill.
+	PriceTable *costmodel.Table
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -320,6 +330,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.getAttestation(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "costs" && r.Method == http.MethodGet:
+		s.getEnvironmentCosts(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
 		s.listReviewThreads(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodPost:
@@ -513,11 +525,12 @@ func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request, princ
 	}
 
 	created := s.Creator.Add(Environment{
-		ID:         "env-" + newRequestID(),
-		Scope:      scope,
-		Version:    1,
-		Generation: 1,
-		ExpiresAt:  s.now().Add(time.Duration(in.RequestedTTLSeconds) * time.Second),
+		ID:              "env-" + newRequestID(),
+		Scope:           scope,
+		Version:         1,
+		Generation:      1,
+		ExpiresAt:       s.now().Add(time.Duration(in.RequestedTTLSeconds) * time.Second),
+		ResourceProfile: in.ResourceProfile,
 	})
 	if rec, ok := s.Creator.(interface {
 		RememberIdempotentRequest(string, string, string)
@@ -1108,6 +1121,79 @@ func (s *Server) listEnvironmentResources(w http.ResponseWriter, r *http.Request
 		})
 	}
 	s.write(w, r, http.StatusOK, map[string]any{"items": items}, requestID)
+}
+
+// getEnvironmentCosts serves GET /v1/environments/{id}/costs: the
+// environment's cost forecast from the captured price reference, at the
+// environment's own profile and remaining lifetime.
+//
+// What each field means, because a forecast is not a bill: "estimated" is
+// this environment's per-preview variable cost for its remaining lifetime;
+// "fixed_attribution" is the foundation floor's share, attributed per
+// preview; "ceiling" is the published bound the fleet's economics are
+// carried under; and "confirmed" is honestly zero — no billing actuals are
+// wired, and a zero that said "confirmed" would be a lie with a number on
+// it.
+func (s *Server) getEnvironmentCosts(w http.ResponseWriter, r *http.Request, principal contract.Principal, id, requestID string) {
+	if s.PriceTable == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire a price reference", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorize("environments.costs", principal, env); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	profile := costmodel.PreviewSmall()
+	if env.ResourceProfile != "" && env.ResourceProfile != profile.Name {
+		s.fail(w, r, CodeUnprocessable, fmt.Sprintf("the environment's profile %q has no costed shape in this deployment", env.ResourceProfile), requestID)
+		return
+	}
+	remaining := env.ExpiresAt.Sub(s.now()).Hours()
+	if remaining < 0 {
+		remaining = 0
+	}
+	variable, err := costmodel.PerPreview(s.PriceTable, profile, remaining)
+	if err != nil {
+		s.fail(w, r, CodeInternal, "the price reference could not resolve this profile's cost lines", requestID)
+		return
+	}
+	report, err := costmodel.Build(s.PriceTable, profile, "us-east-1")
+	if err != nil {
+		s.fail(w, r, CodeInternal, "the price reference could not resolve the fleet's fixed lines", requestID)
+		return
+	}
+	perPreviewAttribution := 0.0
+	if report.MonthlyPreviews > 0 {
+		perPreviewAttribution = report.Fixed.Total / float64(report.MonthlyPreviews)
+	}
+	s.write(w, r, http.StatusOK, map[string]any{
+		"environment_id":  id,
+		"profile":         profile.Name,
+		"region":          report.Region,
+		"remaining_hours": remaining,
+		"estimated": map[string]any{
+			"total": variable.Total,
+			"lines": variable.Lines,
+		},
+		"fixed_attribution": map[string]any{
+			"per_preview": perPreviewAttribution,
+			"note":        "the foundation floor attributed per preview at the profile's monthly volume",
+		},
+		"ceiling": map[string]any{
+			"monthly_total":          report.MonthlyTotal,
+			"customer_ceiling":       report.CustomerCeiling,
+			"binding_lifetime_hours": report.BindingLifetime,
+		},
+		"confirmed": map[string]any{
+			"total": 0.0,
+			"note":  "no billing actuals are wired in this deployment; a zero here is stated, not implied",
+		},
+	}, requestID)
 }
 
 // getEnvironment serves the environment's state, progress and expiry.
