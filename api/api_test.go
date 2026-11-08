@@ -2,16 +2,21 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/resource"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
@@ -981,5 +986,169 @@ func TestExtendRequiresKeyAndPrecondition(t *testing.T) {
 	}
 	if _, ok := store.Get("env-1"); !ok {
 		t.Fatal("the environment vanished on a refused extend")
+	}
+}
+
+// webhookStore is the durable delivery inbox the webhook test drives: an
+// idempotent insert on (provider, delivery id), reporting whether the row
+// was new — the contract the intake store holds.
+type webhookStore struct {
+	mu   sync.Mutex
+	seen map[string]intake.Stored
+	fail bool
+}
+
+func (f *webhookStore) Insert(_ context.Context, s intake.Stored) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return false, errors.New("store down")
+	}
+	if _, dup := f.seen[s.DeliveryID]; dup {
+		return false, nil
+	}
+	f.seen[s.DeliveryID] = s
+	return true, nil
+}
+
+// webhookServer builds a server wired for the webhook route, with the HMAC
+// secret the test signs deliveries with.
+func webhookServer(t *testing.T) (*Server, *webhookStore, []byte) {
+	t.Helper()
+	secret := []byte("webhook-secret-for-tests")
+	store := &webhookStore{seen: map[string]intake.Stored{}}
+	s := &Server{
+		Auth:   StaticAuthenticator{Tokens: map[string]contract.Principal{}},
+		Intake: intake.NewService("github", intake.HMACVerifier{Secret: secret}, store, intake.ReplayGuard{Now: func() time.Time { return now }}),
+		Now:    func() time.Time { return now },
+	}
+	return s, store, secret
+}
+
+// sign computes the signature header a provider would send over the exact
+// bytes.
+func sign(body []byte, secret []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestWebhookAdmitsAVerifiedDeliveryIntoTheDurableInbox: the signature is the
+// identity — no bearer token exists — and a verified delivery lands in the
+// inbox with its payload digest and retention expiry.
+func TestWebhookAdmitsAVerifiedDeliveryIntoTheDurableInbox(t *testing.T) {
+	s, store, secret := webhookServer(t)
+	payload := []byte(`{"action":"opened","pull_request":{"number":142}}`)
+	rec := do(t, s, http.MethodPost, "/v1/integrations/github/events", "",
+		string(payload), map[string]string{
+			"X-GitHub-Delivery":                    "d-1",
+			"X-GitHub-Event":                       "pull_request",
+			"X-GitHub-Repository":                  "acme/app",
+			"X-Hub-Signature-256":                  sign(payload, secret),
+			"X-GitHub-Hook-Installation-Target-ID": "98765",
+		})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	store.mu.Lock()
+	stored, ok := store.seen["d-1"]
+	store.mu.Unlock()
+	if !ok {
+		t.Fatal("the delivery never reached the durable inbox")
+	}
+	if stored.EventType != "pull_request" || stored.Repository != "acme/app" {
+		t.Errorf("stored = %+v", stored)
+	}
+	if stored.PayloadSHA != intake.Digest(payload) {
+		t.Error("the recorded digest is not the digest of the exact bytes received")
+	}
+	if !strings.Contains(rec.Body.String(), `"duplicate":false`) {
+		t.Errorf("the first delivery is not a duplicate: %s", rec.Body.String())
+	}
+}
+
+// TestWebhookRefusesUnverifiablePayloads: a bad signature, a missing
+// signature, and empty bytes are all refused before anything is stored —
+// a payload that fails verification is never persisted.
+func TestWebhookRefusesUnverifiablePayloads(t *testing.T) {
+	s, store, secret := webhookServer(t)
+	payload := []byte(`{"action":"opened"}`)
+
+	cases := []struct {
+		name     string
+		body     string
+		headers  map[string]string
+		wantCode int
+	}{
+		{"wrong signature", string(payload), map[string]string{
+			"X-GitHub-Delivery": "d-1", "X-GitHub-Event": "pull_request",
+			"X-Hub-Signature-256": sign([]byte(`{"tampered":true}`), secret),
+		}, http.StatusUnauthorized},
+		{"absent signature", string(payload), map[string]string{
+			"X-GitHub-Delivery": "d-2", "X-GitHub-Event": "pull_request",
+		}, http.StatusUnauthorized},
+		{"empty payload", "", map[string]string{
+			"X-GitHub-Delivery": "d-3", "X-GitHub-Event": "pull_request",
+			"X-Hub-Signature-256": sign([]byte(""), secret),
+		}, http.StatusUnauthorized},
+		{"missing delivery id", string(payload), map[string]string{
+			"X-GitHub-Event":      "pull_request",
+			"X-Hub-Signature-256": sign(payload, secret),
+		}, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		rec := do(t, s, http.MethodPost, "/v1/integrations/github/events", "", tc.body, tc.headers)
+		if rec.Code != tc.wantCode {
+			t.Errorf("%s: status = %d, want %d (body: %s)", tc.name, rec.Code, tc.wantCode, rec.Body.String())
+		}
+	}
+	store.mu.Lock()
+	n := len(store.seen)
+	store.mu.Unlock()
+	if n != 0 {
+		t.Errorf("the inbox holds %d rows after refused deliveries; a payload that fails verification is never stored", n)
+	}
+}
+
+// TestWebhookRedeliveryIsANoOpThatStillAnswers: the row was written before
+// the first acknowledgement, so a redelivery is a no-op that still answers
+// 202 — and never becomes a second run.
+func TestWebhookRedeliveryIsANoOpThatStillAnswers(t *testing.T) {
+	s, _, secret := webhookServer(t)
+	payload := []byte(`{"action":"synchronize"}`)
+	headers := map[string]string{
+		"X-GitHub-Delivery":   "d-1",
+		"X-GitHub-Event":      "pull_request",
+		"X-Hub-Signature-256": sign(payload, secret),
+	}
+	first := do(t, s, http.MethodPost, "/v1/integrations/github/events", "", string(payload), headers)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first: %d", first.Code)
+	}
+	again := do(t, s, http.MethodPost, "/v1/integrations/github/events", "", string(payload), headers)
+	if again.Code != http.StatusAccepted {
+		t.Fatalf("redelivery: %d", again.Code)
+	}
+	if !strings.Contains(again.Body.String(), `"duplicate":true`) {
+		t.Errorf("the redelivery must say so: %s", again.Body.String())
+	}
+}
+
+// TestWebhookStoreFailureIsNotAcknowledged: a verified delivery whose row
+// could not be persisted answers 500 so the provider redelivers — acking
+// would lose the event permanently.
+func TestWebhookStoreFailureIsNotAcknowledged(t *testing.T) {
+	s, store, secret := webhookServer(t)
+	store.mu.Lock()
+	store.fail = true
+	store.mu.Unlock()
+	payload := []byte(`{"action":"closed"}`)
+	rec := do(t, s, http.MethodPost, "/v1/integrations/github/events", "", string(payload), map[string]string{
+		"X-GitHub-Delivery":   "d-1",
+		"X-GitHub-Event":      "pull_request",
+		"X-Hub-Signature-256": sign(payload, secret),
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }
