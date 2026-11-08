@@ -88,6 +88,19 @@ func (m *MemoryEnvironments) Remove(id string) {
 	m.Environments = out
 }
 
+// Update replaces a stored environment by id. An update of an environment
+// the store does not hold is a no-op, because the caller resolved the
+// environment from this store moments before and its absence now is a race
+// the read-back should surface, not a second error path.
+func (m *MemoryEnvironments) Update(env Environment) {
+	for i, e := range m.Environments {
+		if e.ID == env.ID {
+			m.Environments[i] = env
+			return
+		}
+	}
+}
+
 // RememberRequest records which environment a request id produced.
 func (m *MemoryEnvironments) RememberRequest(requestID, envID string) {
 	if m.RequestEnvironments == nil {
@@ -109,10 +122,16 @@ func (m *MemoryEnvironments) EnvironmentForRequest(requestID string) (Environmen
 // first presented with, alongside the environment it produced. Reuse of the
 // key with a different body is a refused retry, not a second creation.
 func (m *MemoryEnvironments) RememberIdempotentRequest(key, bodyDigest, envID string) {
+	m.RememberIdempotentResult(key, bodyDigest, envID, "")
+}
+
+// RememberIdempotentResult records the encoded result a key produced, so a
+// replay returns it rather than applying a second time.
+func (m *MemoryEnvironments) RememberIdempotentResult(key, bodyDigest, envID, result string) {
 	if m.IdempotentRequests == nil {
 		m.IdempotentRequests = map[string]IdempotentRequestRecord{}
 	}
-	m.IdempotentRequests[key] = IdempotentRequestRecord{BodyDigest: bodyDigest, EnvironmentID: envID}
+	m.IdempotentRequests[key] = IdempotentRequestRecord{BodyDigest: bodyDigest, EnvironmentID: envID, Result: result}
 }
 
 // IdempotentRequest returns what an idempotency key first produced.
@@ -122,10 +141,12 @@ func (m *MemoryEnvironments) IdempotentRequest(key string) (IdempotentRequestRec
 }
 
 // IdempotentRequestRecord is what the store remembers about one idempotency
-// key: the exact body it first carried, and the environment that body created.
+// key: the exact body it first carried, the environment that body created or
+// mutated, and the encoded result to replay.
 type IdempotentRequestRecord struct {
 	BodyDigest    string
 	EnvironmentID string
+	Result        string
 }
 
 // MemoryEnvironments is an in-memory environment store.
@@ -176,6 +197,9 @@ type Server struct {
 	// deployment does not serve environment destruction, and the route
 	// refuses rather than guessing a store.
 	Destroyer Destroyer
+	// Updater applies a changed environment back to the store. Unset means
+	// this deployment does not serve environment extension.
+	Updater Updater
 	// Ledger is the resource ledger the safe ownership inventory reads. Unset
 	// means this deployment does not serve the resources route.
 	Ledger resource.Ledger
@@ -192,6 +216,12 @@ type Server struct {
 // says "gone" more honestly than a second success would.
 type Destroyer interface {
 	Remove(id string)
+}
+
+// Updater is the store capability extend needs: the environment's row moves
+// to the new expiry and version as one write.
+type Updater interface {
+	Update(env Environment)
 }
 
 // now returns the server's current moment.
@@ -234,6 +264,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.getEnvironment(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "destroy" && r.Method == http.MethodPost:
 		s.destroyEnvironment(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "extend" && r.Method == http.MethodPost:
+		s.extendEnvironment(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -479,6 +511,100 @@ func (s *Server) destroyEnvironment(w http.ResponseWriter, r *http.Request, prin
 		"state":          "destroying",
 		"status_url":     "/v1/environments/" + id,
 	}, requestID)
+}
+
+// extendBody is the extend request's shape: one bounded value.
+type extendBody struct {
+	RequestedTTLSeconds int `json:"requested_ttl_seconds"`
+}
+
+// extendEnvironment serves POST /v1/environments/{id}/extend: a bounded TTL
+// extension under the platform's policy. The extension moves the expiry and
+// bumps the resource version as one write, so the next mutation's
+// precondition is the version this response names.
+//
+// The replay rule runs before the precondition check, because a retried
+// extension that already applied would otherwise answer 409 against the very
+// version it moved: the same key with the same body returns the recorded
+// result, and the same key with a different body is a refused retry.
+func (s *Server) extendEnvironment(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Updater == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an environment updater", requestID)
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get(IdempotencyHeader))
+	if key == "" {
+		s.fail(w, r, CodeInvalid, "a mutation carries an Idempotency-Key header", requestID)
+		return
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	if rec, found := s.idempotentRequest(key); found {
+		if rec.BodyDigest != digest {
+			s.fail(w, r, CodeConflict, "this idempotency key was already used with a different body; a retried request must repeat its body exactly", requestID)
+			return
+		}
+		s.write(w, r, http.StatusOK, json.RawMessage(rec.Result), requestID)
+		return
+	}
+
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeMutation("environments.extend", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	var in extendBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the extend shape", requestID)
+		return
+	}
+	if in.RequestedTTLSeconds < minTTLSeconds {
+		s.fail(w, r, CodeUnprocessable, fmt.Sprintf("requested_ttl_seconds must be at least %d", minTTLSeconds), requestID)
+		return
+	}
+	newExpiry := env.ExpiresAt.Add(time.Duration(in.RequestedTTLSeconds) * time.Second)
+	if ceiling := s.now().Add(maxTTLSeconds * time.Second); newExpiry.After(ceiling) {
+		s.fail(w, r, CodeUnprocessable, fmt.Sprintf("the extension would carry the expiry past %s: the platform's TTL is bounded policy, not a client's preference", ceiling.Format(time.RFC3339)), requestID)
+		return
+	}
+
+	env.ExpiresAt = newExpiry
+	env.Version++
+	s.Updater.Update(env)
+
+	result := map[string]any{
+		"environment_id":   id,
+		"expires_at":       newExpiry,
+		"resource_version": env.Version,
+	}
+	encoded, _ := json.Marshal(result)
+	s.rememberIdempotentResult(key, digest, id, string(encoded))
+	s.write(w, r, http.StatusOK, result, requestID)
+}
+
+// idempotentRequest returns what a key first produced, if the store
+// remembers it.
+func (s *Server) idempotentRequest(key string) (IdempotentRequestRecord, bool) {
+	if store, ok := s.Creator.(interface {
+		IdempotentRequest(string) (IdempotentRequestRecord, bool)
+	}); ok {
+		return store.IdempotentRequest(key)
+	}
+	return IdempotentRequestRecord{}, false
+}
+
+// rememberIdempotentResult records the result a key produced, so a replay
+// returns it rather than applying a second time.
+func (s *Server) rememberIdempotentResult(key, digest, envID, result string) {
+	if store, ok := s.Updater.(interface {
+		RememberIdempotentResult(string, string, string, string)
+	}); ok {
+		store.RememberIdempotentResult(key, digest, envID, result)
+	}
 }
 
 // resourceView is one allocation's safe ownership view: what the resource is,
