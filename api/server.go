@@ -14,6 +14,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/exceptions"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
@@ -219,6 +220,9 @@ type Server struct {
 	// Gates is the gate-run store. Unset means this deployment does not serve
 	// the gates routes.
 	Gates *gates.Store
+	// Exceptions is the exception store. Unset means this deployment does not
+	// serve the exceptions route.
+	Exceptions *exceptions.Store
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -296,6 +300,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.requestGateRun(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "gates" && r.Method == http.MethodGet:
 		s.getGateRun(w, r, principal, segments[2], requestID)
+	case len(segments) == 2 && segments[0] == "v1" && segments[1] == "exceptions" && r.Method == http.MethodPost:
+		s.grantException(w, r, principal, body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -780,6 +786,55 @@ func (s *Server) getGateRun(w http.ResponseWriter, r *http.Request, principal co
 		return
 	}
 	s.write(w, r, http.StatusOK, run, requestID)
+}
+
+// exceptionBody is the grant request: what is excepted, why, and for how
+// long.
+type exceptionBody struct {
+	EnvironmentID string `json:"environment_id"`
+	Reason        string `json:"reason"`
+	TTLHours      int    `json:"ttl_hours"`
+}
+
+// grantException serves POST /v1/exceptions: a bounded, separately
+// authorized exception to policy.
+//
+// Separately authorized means exactly that: the operation's permission is
+// not the ordinary write — granting exceptions must not ride along with
+// using the feature. The scope is derived from the environment the
+// exception applies to; the actor is the credential's own identity; the
+// bound is the store's, not the client's.
+func (s *Server) grantException(w http.ResponseWriter, r *http.Request, principal contract.Principal, body []byte, requestID string) {
+	if s.Exceptions == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an exception store", requestID)
+		return
+	}
+	var in exceptionBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the exception shape", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(in.EnvironmentID)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeRequest("exceptions.grant", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	window := time.Duration(in.TTLHours) * time.Hour
+	if in.TTLHours == 0 {
+		// The default window is the cap: an exception lives as long as the
+		// platform allows, and not a moment longer.
+		window = exceptions.MaxWindow
+	}
+	rec, err := s.Exceptions.Request(env.ID, env.Scope, in.Reason, principal.ID, window)
+	if err != nil {
+		s.fail(w, r, CodeUnprocessable, err.Error(), requestID)
+		return
+	}
+	s.write(w, r, http.StatusCreated, rec, requestID)
 }
 
 // githubWebhook serves POST /v1/integrations/github/events: exact-byte

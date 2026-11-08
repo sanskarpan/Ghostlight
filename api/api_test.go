@@ -16,6 +16,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/exceptions"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
@@ -617,10 +618,12 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "gate request", Scope: "repo:acme", Permission: "environment:write"})
 	add(contract.Operation{ID: "gates.get", Method: contract.MethodGet, Path: "/gates/{run_id}",
 		CLIName: "gate get", Scope: "repo:acme", Permission: "environment:read"})
+	add(contract.Operation{ID: "exceptions.grant", Method: contract.MethodPost, Path: "/exceptions",
+		CLIName: "exception grant", Scope: "repo:acme", Permission: "policy:exception"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
-			"token-ada":     {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write"}},
+			"token-ada":     {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write", "policy:exception"}},
 			"token-nogrant": {ID: "noa", Grants: nil, Permissions: []string{"environment:write"}},
 		}},
 		Operations:   ops,
@@ -631,6 +634,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Updater:      store,
 		Ledger:       resource.NewMemoryLedger(func() time.Time { return now }),
 		Gates:        gates.NewStore(func() time.Time { return now }),
+		Exceptions:   exceptions.NewStore(func() time.Time { return now }),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -1322,5 +1326,68 @@ func TestAGateRunOfAnotherScopeIsNotReadable(t *testing.T) {
 	got := do(t, s, http.MethodGet, "/v1/gates/"+run.ID, "token-eve", "", nil)
 	if got.Code != http.StatusForbidden {
 		t.Fatalf("eve's read: %d, want 403", got.Code)
+	}
+}
+
+// TestGrantingAnExceptionRequiresItsOwnAuthority: the operation's permission
+// is not the ordinary write — the power to grant exceptions must not ride
+// along with the power to use the feature.
+func TestGrantingAnExceptionRequiresItsOwnAuthority(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 2, Generation: 1})
+
+	// A principal with only the ordinary writes is refused.
+	s.Auth = StaticAuthenticator{Tokens: map[string]contract.Principal{
+		"token-writer": {ID: "wright", Grants: []string{"repo:acme"}, Permissions: []string{"environment:write"}},
+		"token-ada":    {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write", "policy:exception"}},
+	}}
+	denied := do(t, s, http.MethodPost, "/v1/exceptions", "token-writer",
+		`{"environment_id":"env-1","reason":"release freeze","ttl_hours":24}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "2"})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("the ordinary writer granted an exception: %d, want 403", denied.Code)
+	}
+	granted := do(t, s, http.MethodPost, "/v1/exceptions", "token-ada",
+		`{"environment_id":"env-1","reason":"release freeze","ttl_hours":24}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "2"})
+	if granted.Code != http.StatusCreated {
+		t.Fatalf("the exception authority: %d (body: %s)", granted.Code, granted.Body.String())
+	}
+	var rec exceptions.Record
+	if err := json.Unmarshal(granted.Body.Bytes(), &rec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rec.Reason != "release freeze" || rec.CreatedBy != "ada" {
+		t.Errorf("record = %+v", rec)
+	}
+	if !rec.ExpiresAt.Equal(now.Add(24 * time.Hour)) {
+		t.Errorf("expires_at = %v, want the requested window", rec.ExpiresAt)
+	}
+}
+
+// TestAnExceptionCarriesAReasonAndABound: the store's rules surface as 422 —
+// an invisible exception or an unbounded one is a policy change, not an
+// exception.
+func TestAnExceptionCarriesAReasonAndABound(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1})
+
+	noReason := do(t, s, http.MethodPost, "/v1/exceptions", "token-ada",
+		`{"environment_id":"env-1","reason":"","ttl_hours":24}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if noReason.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a reasonless exception: %d, want 422", noReason.Code)
+	}
+	unbounded := do(t, s, http.MethodPost, "/v1/exceptions", "token-ada",
+		`{"environment_id":"env-1","reason":"keep it","ttl_hours":100000}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "1"})
+	if unbounded.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unbounded exception: %d, want 422", unbounded.Code)
+	}
+	unknown := do(t, s, http.MethodPost, "/v1/exceptions", "token-ada",
+		`{"environment_id":"env-nope","reason":"keep it","ttl_hours":24}`,
+		map[string]string{"Idempotency-Key": "key-3", "If-Match": "1"})
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("an exception for an unknown environment: %d, want 404", unknown.Code)
 	}
 }
