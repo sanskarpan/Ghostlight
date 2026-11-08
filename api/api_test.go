@@ -603,6 +603,8 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "environment destroy", Scope: "repo:acme", Permission: "environment:write"})
 	add(contract.Operation{ID: "environments.resources", Method: contract.MethodGet, Path: "/environments/{id}/resources",
 		CLIName: "environment resources", Scope: "repo:acme", Permission: "environment:read"})
+	add(contract.Operation{ID: "environments.extend", Method: contract.MethodPost, Path: "/environments/{id}/extend",
+		CLIName: "environment extend", Scope: "repo:acme", Permission: "environment:write"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -614,6 +616,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Environments: store,
 		Creator:      store,
 		Destroyer:    store,
+		Updater:      store,
 		Ledger:       resource.NewMemoryLedger(func() time.Time { return now }),
 		Now:          func() time.Time { return now },
 	}
@@ -865,5 +868,118 @@ func TestResourcesOfAnUnknownEnvironmentAnswer404(t *testing.T) {
 	rec := do(t, s, http.MethodGet, "/v1/environments/env-nope/resources", "token-ada", "", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestExtendMovesTheExpiryAndTheVersion: a bounded extension applies as one
+// write and names the version the next mutation's precondition must carry.
+func TestExtendMovesTheExpiryAndTheVersion(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 4, Generation: 1,
+		ExpiresAt: now.Add(2 * time.Hour)})
+
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":3600}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "4"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	env, ok := store.Get("env-1")
+	if !ok {
+		t.Fatal("the environment vanished")
+	}
+	if !env.ExpiresAt.Equal(now.Add(3 * time.Hour)) {
+		t.Errorf("expires_at = %v, want the old expiry plus the extension", env.ExpiresAt)
+	}
+	if env.Version != 5 {
+		t.Errorf("version = %d, want 5 — the response names the version the next mutation preconditions on", env.Version)
+	}
+	if !strings.Contains(rec.Body.String(), `"resource_version":5`) {
+		t.Errorf("the response does not name the new version: %s", rec.Body.String())
+	}
+}
+
+// TestExtendReplaysIdempotently: the same key with the same body returns the
+// recorded result and must not extend twice — a retried extension that
+// applied twice would quietly hand out double the time.
+func TestExtendReplaysIdempotently(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 4, Generation: 1,
+		ExpiresAt: now.Add(2 * time.Hour)})
+
+	first := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":3600}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "4"})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first: %d", first.Code)
+	}
+	// The replay carries the SAME precondition the first attempt carried —
+	// the version has since moved, and the replay must still answer with the
+	// recorded result rather than a 409 against it.
+	replay := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":3600}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "4"})
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay: %d (body: %s)", replay.Code, replay.Body.String())
+	}
+	if replay.Body.String() != first.Body.String() {
+		t.Errorf("the replay must return the recorded result")
+	}
+	env, _ := store.Get("env-1")
+	if !env.ExpiresAt.Equal(now.Add(3 * time.Hour)) {
+		t.Errorf("the replay applied a second time: expires_at = %v", env.ExpiresAt)
+	}
+	other := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":7200}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "5"})
+	if other.Code != http.StatusConflict {
+		t.Errorf("same key, different body: %d, want 409", other.Code)
+	}
+}
+
+// TestExtendRefusesPolicyViolations: below the floor and past the ceiling
+// are both 422 — the platform's TTL is bounded policy.
+func TestExtendRefusesPolicyViolations(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1,
+		ExpiresAt: now.Add(23 * time.Hour)})
+
+	below := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":60}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if below.Code != http.StatusUnprocessableEntity {
+		t.Errorf("below the floor: %d, want 422", below.Code)
+	}
+	// 23h + 4h crosses the 24h ceiling from the server's now.
+	above := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":14400}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "1"})
+	if above.Code != http.StatusUnprocessableEntity {
+		t.Errorf("past the ceiling: %d, want 422", above.Code)
+	}
+	env, _ := store.Get("env-1")
+	if env.Version != 1 {
+		t.Errorf("a refused extension must not move the version, got %d", env.Version)
+	}
+}
+
+// TestExtendRequiresKeyAndPrecondition: the §1 contract, same as destroy.
+func TestExtendRequiresKeyAndPrecondition(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 4, Generation: 1})
+
+	noKey := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":3600}`, map[string]string{"If-Match": "4"})
+	if noKey.Code != http.StatusBadRequest {
+		t.Errorf("no key: %d, want 400", noKey.Code)
+	}
+	stale := do(t, s, http.MethodPost, "/v1/environments/env-1/extend", "token-ada",
+		`{"requested_ttl_seconds":3600}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "3"})
+	if stale.Code != http.StatusConflict {
+		t.Errorf("stale version: %d, want 409", stale.Code)
+	}
+	if _, ok := store.Get("env-1"); !ok {
+		t.Fatal("the environment vanished on a refused extend")
 	}
 }
