@@ -14,6 +14,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/resource"
 	"github.com/sanskarpan/Ghostlight/internal/reviewer"
@@ -203,6 +204,10 @@ type Server struct {
 	// Ledger is the resource ledger the safe ownership inventory reads. Unset
 	// means this deployment does not serve the resources route.
 	Ledger resource.Ledger
+	// Intake admits provider webhooks: exact-byte signature verification, a
+	// replay window, and the durable delivery inbox. Unset means this
+	// deployment does not serve the webhook route.
+	Intake *intake.Service
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -240,12 +245,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(RequestIDHeader, requestID)
 
-	principal, err := s.Authenticate(r)
-	if err != nil {
-		s.fail(w, r, CodeUnauthenticated, "the request carried no usable credentials", requestID)
-		return
-	}
-
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		s.fail(w, r, CodeInvalid, "the request body could not be read", requestID)
@@ -256,7 +255,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The provider webhook route is answered before credential
+	// authentication, because its identity is its signature over the exact
+	// bytes, not a bearer token: a webhook has no token to bear.
 	segments := splitPath(r.URL.Path)
+	if len(segments) == 4 && segments[0] == "v1" && segments[1] == "integrations" && segments[2] == "github" && segments[3] == "events" {
+		s.githubWebhook(w, r, body, requestID)
+		return
+	}
+
+	principal, err := s.Authenticate(r)
+	if err != nil {
+		s.fail(w, r, CodeUnauthenticated, "the request carried no usable credentials", requestID)
+		return
+	}
+
 	switch {
 	case len(segments) == 2 && segments[0] == "v1" && segments[1] == "environments" && r.Method == http.MethodPost:
 		s.createEnvironment(w, r, principal, body, requestID)
@@ -605,6 +618,53 @@ func (s *Server) rememberIdempotentResult(key, digest, envID, result string) {
 	}); ok {
 		store.RememberIdempotentResult(key, digest, envID, result)
 	}
+}
+
+// githubWebhook serves POST /v1/integrations/github/events: exact-byte
+// signature verification and the durable provider-delivery inbox.
+//
+// The order is the intake service's, and it is deliberate: validate the
+// delivery metadata, verify the signature over the exact bytes that arrived,
+// and only then persist — a payload that fails any of these is never stored.
+// A duplicate delivery is a no-op that still answers 202: the row was written
+// before the first acknowledgement, and a redelivery must not become a second
+// run. A store rejection answers 500 so the provider redelivers — acking a
+// delivery whose row was lost would lose the event permanently.
+func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request, body []byte, requestID string) {
+	if s.Intake == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire a webhook intake", requestID)
+		return
+	}
+	d := intake.Delivery{
+		DeliveryID: r.Header.Get("X-GitHub-Delivery"),
+		EventType:  r.Header.Get("X-GitHub-Event"),
+		// GitHub signs the raw body and carries no signature timestamp; the
+		// receipt moment is the replay window's reference, and the durable
+		// (provider, delivery id) uniqueness is the replay defense.
+		Timestamp:       s.now(),
+		InstallationRef: r.Header.Get("X-GitHub-Hook-Installation-Target-ID"),
+		RepositoryRef:   r.Header.Get("X-GitHub-Repository"),
+	}
+	stored, err := s.Intake.Intake(r.Context(), d, body, r.Header.Get("X-Hub-Signature-256"))
+	if err != nil {
+		switch {
+		case errors.Is(err, intake.ErrSignatureInvalid):
+			s.fail(w, r, CodeUnauthenticated, "the payload's signature did not verify over the exact bytes received", requestID)
+		case errors.Is(err, intake.ErrMalformedDelivery):
+			s.fail(w, r, CodeInvalid, err.Error(), requestID)
+		case errors.Is(err, intake.ErrTimestampOutsideTolerance):
+			s.fail(w, r, CodeInvalid, err.Error(), requestID)
+		default:
+			// ErrStoreRejected: not acknowledged, so the provider redelivers.
+			s.fail(w, r, CodeInternal, "the verified delivery could not be persisted; expect a redelivery", requestID)
+		}
+		return
+	}
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"delivery_id": stored.DeliveryID,
+		"duplicate":   stored.Duplicate,
+		"expires_at":  stored.ExpiresAt,
+	}, requestID)
 }
 
 // resourceView is one allocation's safe ownership view: what the resource is,
