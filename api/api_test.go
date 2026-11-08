@@ -16,6 +16,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/resource"
@@ -612,6 +613,10 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "environment extend", Scope: "repo:acme", Permission: "environment:write"})
 	add(contract.Operation{ID: "environments.generations.create", Method: contract.MethodPost, Path: "/environments/{id}/generations",
 		CLIName: "environment generation create", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "environments.gates.request", Method: contract.MethodPost, Path: "/environments/{id}/gates",
+		CLIName: "gate request", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "gates.get", Method: contract.MethodGet, Path: "/gates/{run_id}",
+		CLIName: "gate get", Scope: "repo:acme", Permission: "environment:read"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -625,6 +630,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Destroyer:    store,
 		Updater:      store,
 		Ledger:       resource.NewMemoryLedger(func() time.Time { return now }),
+		Gates:        gates.NewStore(func() time.Time { return now }),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -1221,5 +1227,100 @@ func TestCreateGenerationValidatesTheCandidateSet(t *testing.T) {
 		map[string]string{"Idempotency-Key": "key-2", "If-Match": "1"})
 	if unknown.Code != http.StatusNotFound {
 		t.Errorf("a generation for an unknown environment: %d, want 404", unknown.Code)
+	}
+}
+
+// TestRequestingAGateRunBindsItToTheExactGeneration: the candidate digest is
+// computed by the server from the row's recorded candidate set, the run
+// binds the generation it was requested against, and the record is honest
+// about being unsigned.
+func TestRequestingAGateRunBindsItToTheExactGeneration(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 2, Generation: 3,
+		SourceSHA:           "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+		RecipeDigest:        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ConfigurationDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/gates", "token-ada",
+		`{"kind":"isolation","policy_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "2"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		RunID      string `json:"run_id"`
+		State      string `json:"state"`
+		Generation uint64 `json:"generation"`
+		StatusURL  string `json:"status_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.State != "requested" || out.Generation != 3 {
+		t.Fatalf("run = %+v", out)
+	}
+	if out.StatusURL != "/v1/gates/"+out.RunID {
+		t.Errorf("status_url = %q", out.StatusURL)
+	}
+
+	// GET answers the §3 shape as it IS: no result, no invariant outcomes,
+	// nothing a trusted agent has not signed.
+	got := do(t, s, http.MethodGet, "/v1/gates/"+out.RunID, "token-ada", "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET status = %d (body: %s)", got.Code, got.Body.String())
+	}
+	var run gates.Run
+	if err := json.Unmarshal(got.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != gates.StateRequested || run.Result != "" || run.ObservationsComplete {
+		t.Fatalf("a requested run claimed signed facts: %+v", run)
+	}
+	// The candidate digest is the server's own computation over the row's
+	// exact candidate set.
+	canonical := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n" +
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sum := sha256.Sum256([]byte(canonical))
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if run.CandidateDigest != want {
+		t.Errorf("candidate_digest = %q, want the server's computation %q", run.CandidateDigest, want)
+	}
+}
+
+// TestTheGateCatalogRefusesUndefinedGates: a gate nobody defined is a
+// string, and a string is not a gate.
+func TestTheGateCatalogRefusesUndefinedGates(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1})
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/gates", "token-ada",
+		`{"kind":"vibes"}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "not in the catalog") {
+		t.Errorf("the refusal does not name the catalog: %s", rec.Body.String())
+	}
+}
+
+// TestAGateRunOfAnotherScopeIsNotReadable: the run's scope is what a
+// reader's grants must cover; eve's grant does not reach repo:acme.
+func TestAGateRunOfAnotherScopeIsNotReadable(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1})
+	run, err := s.Gates.Request("env-1", "repo:acme", 1, gates.KindCleanup,
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	// token-eve authenticates but covers only repo:other.
+	s.Auth = StaticAuthenticator{Tokens: map[string]contract.Principal{
+		"token-ada": {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write"}},
+		"token-eve": {ID: "eve", Grants: []string{"repo:other"}, Permissions: []string{"environment:read"}},
+	}}
+	got := do(t, s, http.MethodGet, "/v1/gates/"+run.ID, "token-eve", "", nil)
+	if got.Code != http.StatusForbidden {
+		t.Fatalf("eve's read: %d, want 403", got.Code)
 	}
 }

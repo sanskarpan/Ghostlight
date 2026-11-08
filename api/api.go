@@ -350,6 +350,11 @@ func looksLikeImageReference(s string) bool {
 		// not a registry reference.
 		return false
 	}
+	if isDigestForm(s) {
+		// An algorithm-qualified digest is the pin itself: refusing it would
+		// refuse the platform's own identities.
+		return false
+	}
 	if strings.Contains(s, "@sha256:") {
 		return true
 	}
@@ -369,6 +374,28 @@ func looksLikeImageReference(s string) bool {
 	}
 	first := name[0]
 	return first >= 'a' && first <= 'z'
+}
+
+// isDigestForm reports whether s is an algorithm-qualified hex digest
+// ("sha256:<hex>"), the shape every identity this platform names carries.
+func isDigestForm(s string) bool {
+	for _, alg := range []string{"sha256:", "sha512:", "sha1:"} {
+		if !strings.HasPrefix(s, alg) {
+			continue
+		}
+		hexPart := s[len(alg):]
+		if len(hexPart) < 32 {
+			return false
+		}
+		for _, c := range hexPart {
+			if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // manifestFieldNames are the body fields that turn a request into a manifest.
