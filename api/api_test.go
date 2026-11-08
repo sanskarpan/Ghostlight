@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanskarpan/Ghostlight/internal/attestations"
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
@@ -594,6 +595,17 @@ func TestTheRetryGuidanceIsHonest(t *testing.T) {
 	}
 }
 
+// attestationAuthority builds the signing authority the attestations route
+// reads, bound to the test's clock.
+func attestationAuthority(t *testing.T, now time.Time) *attestations.Authority {
+	t.Helper()
+	a, err := attestations.NewAuthority(func() time.Time { return now }, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("attestation authority: %v", err)
+	}
+	return a
+}
+
 // createServer builds a server wired for the lifecycle family: an empty
 // store, the creator and destroyer capabilities installed, and the operations
 // the family needs declared.
@@ -627,6 +639,8 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "experiment abort", Scope: "repo:acme", Permission: "environment:write"})
 	add(contract.Operation{ID: "experiments.get", Method: contract.MethodGet, Path: "/experiments/{run_id}",
 		CLIName: "experiment get", Scope: "repo:acme", Permission: "environment:read"})
+	add(contract.Operation{ID: "attestations.get", Method: contract.MethodGet, Path: "/attestations/{id}",
+		CLIName: "attestation get", Scope: "repo:acme", Permission: "environment:read"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -643,6 +657,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Gates:        gates.NewStore(func() time.Time { return now }),
 		Exceptions:   exceptions.NewStore(func() time.Time { return now }),
 		Experiments:  experiments.NewStore(func() time.Time { return now }, nil),
+		Attestations: attestationAuthority(t, now),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -1496,5 +1511,68 @@ func TestAnExperimentOfAnotherScopeIsNotReadable(t *testing.T) {
 	got := do(t, s, http.MethodGet, "/v1/experiments/"+run.ID, "token-eve", "", nil)
 	if got.Code != http.StatusForbidden {
 		t.Fatalf("eve's read: %d, want 403", got.Code)
+	}
+}
+
+// TestReadingAnAttestationServesTheSignedFact: the state the reader sees is
+// the state the signature and the clock and the withdrawal record say —
+// never a fact the store guessed.
+func TestReadingAnAttestationServesTheSignedFact(t *testing.T) {
+	s, _ := createServer(t)
+	rec, err := s.Attestations.Issue("env-1", "repo:acme", 3,
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"cleanup_verified")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	got := do(t, s, http.MethodGet, "/v1/attestations/"+rec.ID, "token-ada", "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", got.Code, got.Body.String())
+	}
+	var out struct {
+		Attestation attestations.Attestation `json:"attestation"`
+		State       string                   `json:"state"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.State != "valid" || out.Attestation.Result != "cleanup_verified" || out.Attestation.Generation != 3 {
+		t.Fatalf("served = %+v state=%q", out.Attestation, out.State)
+	}
+	if !strings.Contains(got.Body.String(), `"candidate_bound":true`) {
+		t.Error("the response does not state the candidate binding")
+	}
+}
+
+// TestARevokedAttestationSaysSo: the withdrawal record is carried — reason,
+// actor, when — because a withdrawn result with no withdrawal record is a
+// dispute waiting for evidence nobody kept.
+func TestARevokedAttestationSaysSo(t *testing.T) {
+	s, _ := createServer(t)
+	rec, err := s.Attestations.Issue("env-1", "repo:acme", 1,
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"cleanup_verified")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := s.Attestations.Revoke(rec.ID, "the candidate was superseded", "ada"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	got := do(t, s, http.MethodGet, "/v1/attestations/"+rec.ID, "token-ada", "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), `"state":"revoked"`) ||
+		!strings.Contains(got.Body.String(), "the candidate was superseded") {
+		t.Errorf("the withdrawal is not visible: %s", got.Body.String())
+	}
+}
+
+// TestAnUnknownAttestationAnswers404.
+func TestAnUnknownAttestationAnswers404(t *testing.T) {
+	s, _ := createServer(t)
+	got := do(t, s, http.MethodGet, "/v1/attestations/att-none", "token-ada", "", nil)
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", got.Code)
 	}
 }

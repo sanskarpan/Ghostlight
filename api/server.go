@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sanskarpan/Ghostlight/internal/attestations"
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
@@ -227,6 +228,9 @@ type Server struct {
 	// Experiments is the experiment-run store. Unset means this deployment
 	// does not serve the experiments routes.
 	Experiments *experiments.Store
+	// Attestations is the platform's signing authority. Unset means this
+	// deployment does not serve the attestations route.
+	Attestations *attestations.Authority
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -312,6 +316,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.abortExperiment(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "experiments" && r.Method == http.MethodGet:
 		s.getExperiment(w, r, principal, segments[2], requestID)
+	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "attestations" && r.Method == http.MethodGet:
+		s.getAttestation(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -966,6 +972,42 @@ func (s *Server) getExperiment(w http.ResponseWriter, r *http.Request, principal
 		return
 	}
 	s.write(w, r, http.StatusOK, run, requestID)
+}
+
+// getAttestation serves GET /v1/attestations/{id}: the signed,
+// candidate-bound result, with its state as the reader should see it —
+// valid, expired, or revoked with the withdrawal record carried.
+//
+// The signature is verified over the record's own content on every read:
+// the store is not the source of truth for validity, the signature is, and
+// a stored record that no longer verifies is a server fault rather than a
+// served fact.
+func (s *Server) getAttestation(w http.ResponseWriter, r *http.Request, principal contract.Principal, id, requestID string) {
+	if s.Attestations == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an attestation authority", requestID)
+		return
+	}
+	rec, state, err := s.Attestations.Get(id)
+	if err != nil {
+		if errors.Is(err, attestations.ErrTampered) {
+			// The store's record and its signature disagree. Serving it would
+			// be serving a fact nobody signed; refusing it loudly is the only
+			// honest answer, and it is the server's fault to own.
+			s.fail(w, r, CodeInternal, "the stored attestation's signature no longer verifies over its content", requestID)
+			return
+		}
+		s.fail(w, r, CodeNotFound, "no such attestation", requestID)
+		return
+	}
+	if err := s.authorizeScope("attestations.get", principal, rec.Scope); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	s.write(w, r, http.StatusOK, map[string]any{
+		"attestation":     rec,
+		"state":           string(state),
+		"candidate_bound": true,
+	}, requestID)
 }
 
 // githubWebhook serves POST /v1/integrations/github/events: exact-byte
