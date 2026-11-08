@@ -17,6 +17,7 @@ import (
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
 	"github.com/sanskarpan/Ghostlight/internal/exceptions"
+	"github.com/sanskarpan/Ghostlight/internal/experiments"
 	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
@@ -620,6 +621,12 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "gate get", Scope: "repo:acme", Permission: "environment:read"})
 	add(contract.Operation{ID: "exceptions.grant", Method: contract.MethodPost, Path: "/exceptions",
 		CLIName: "exception grant", Scope: "repo:acme", Permission: "policy:exception"})
+	add(contract.Operation{ID: "environments.experiments.request", Method: contract.MethodPost, Path: "/environments/{id}/experiments",
+		CLIName: "experiment request", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "experiments.abort", Method: contract.MethodPost, Path: "/experiments/{run_id}/abort",
+		CLIName: "experiment abort", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "experiments.get", Method: contract.MethodGet, Path: "/experiments/{run_id}",
+		CLIName: "experiment get", Scope: "repo:acme", Permission: "environment:read"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -635,6 +642,7 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		Ledger:       resource.NewMemoryLedger(func() time.Time { return now }),
 		Gates:        gates.NewStore(func() time.Time { return now }),
 		Exceptions:   exceptions.NewStore(func() time.Time { return now }),
+		Experiments:  experiments.NewStore(func() time.Time { return now }, nil),
 		Now:          func() time.Time { return now },
 	}
 	return s, store
@@ -1389,5 +1397,104 @@ func TestAnExceptionCarriesAReasonAndABound(t *testing.T) {
 		map[string]string{"Idempotency-Key": "key-3", "If-Match": "1"})
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("an exception for an unknown environment: %d, want 404", unknown.Code)
+	}
+}
+
+// TestRequestingAnExperimentIsCatalogBounded: the profile must exist, every
+// parameter must be declared and in bounds, and the target is the
+// environment the request was authorized against — never a body field.
+func TestRequestingAnExperimentIsCatalogBounded(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1})
+
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/experiments", "token-ada",
+		`{"profile":"cpu-stress","parameters":{"cores":1,"duration_seconds":30}}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		RunID  string         `json:"run_id"`
+		State  string         `json:"state"`
+		Params map[string]int `json:"parameters"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.State != "requested" || out.Params["cores"] != 1 {
+		t.Fatalf("run = %+v", out)
+	}
+	stored, err := s.Experiments.Get(out.RunID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.EnvironmentID != "env-1" || stored.Scope != "repo:acme" {
+		t.Errorf("the target is not the authorized environment: %+v", stored)
+	}
+
+	for name, body := range map[string]string{
+		"unknown profile":  `{"profile":"delete-production","parameters":{"cores":1,"duration_seconds":30}}`,
+		"undeclared key":   `{"profile":"cpu-stress","parameters":{"cores":1,"duration_seconds":30,"namespace_override":1}}`,
+		"out of bounds":    `{"profile":"cpu-stress","parameters":{"cores":64,"duration_seconds":30}}`,
+		"missing required": `{"profile":"cpu-stress","parameters":{"cores":1}}`,
+	} {
+		bad := do(t, s, http.MethodPost, "/v1/environments/env-1/experiments", "token-ada", body,
+			map[string]string{"Idempotency-Key": "key-" + name, "If-Match": "1"})
+		if bad.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: status = %d, want 422 (body: %s)", name, bad.Code, bad.Body.String())
+		}
+	}
+}
+
+// TestAbortingAnExperimentIsIdempotent: a retried abort returns the same
+// terminal record, the reason is carried verbatim, and recovery is not
+// claimed — the record says aborted, and nothing pretended to verify.
+func TestAbortingAnExperimentIsIdempotent(t *testing.T) {
+	s, _ := createServer(t)
+	run, err := s.Experiments.Request("env-1", "repo:acme", "latency-inject",
+		map[string]int{"milliseconds": 100, "duration_seconds": 60})
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	first := do(t, s, http.MethodPost, "/v1/experiments/"+run.ID+"/abort", "token-ada",
+		`{"reason":"reviewer asked to stop"}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if first.Code != http.StatusOK {
+		t.Fatalf("abort status = %d (body: %s)", first.Code, first.Body.String())
+	}
+	second := do(t, s, http.MethodPost, "/v1/experiments/"+run.ID+"/abort", "token-ada",
+		`{"reason":"retried"}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "1"})
+	if second.Code != http.StatusOK {
+		t.Fatalf("retried abort: %d", second.Code)
+	}
+	var run2 experiments.Run
+	if err := json.Unmarshal(second.Body.Bytes(), &run2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if run2.State != experiments.StateAborted || run2.AbortReason != "reviewer asked to stop" {
+		t.Errorf("the retried abort must return the same terminal record: %+v", run2)
+	}
+	if run2.RecoveryVerified {
+		t.Error("nothing verified recovery; the record must not claim it")
+	}
+}
+
+// TestAnExperimentOfAnotherScopeIsNotReadable: the run's scope is what a
+// reader's grants must cover.
+func TestAnExperimentOfAnotherScopeIsNotReadable(t *testing.T) {
+	s, _ := createServer(t)
+	s.Auth = StaticAuthenticator{Tokens: map[string]contract.Principal{
+		"token-ada": {ID: "ada", Grants: []string{"repo:acme"}, Permissions: []string{"environment:read", "environment:write"}},
+		"token-eve": {ID: "eve", Grants: []string{"repo:other"}, Permissions: []string{"environment:read"}},
+	}}
+	run, err := s.Experiments.Request("env-1", "repo:acme", "cpu-stress",
+		map[string]int{"cores": 1, "duration_seconds": 30})
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	got := do(t, s, http.MethodGet, "/v1/experiments/"+run.ID, "token-eve", "", nil)
+	if got.Code != http.StatusForbidden {
+		t.Fatalf("eve's read: %d, want 403", got.Code)
 	}
 }
