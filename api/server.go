@@ -14,6 +14,7 @@ import (
 
 	"github.com/sanskarpan/Ghostlight/internal/console"
 	"github.com/sanskarpan/Ghostlight/internal/contract"
+	"github.com/sanskarpan/Ghostlight/internal/gates"
 	"github.com/sanskarpan/Ghostlight/internal/intake"
 	"github.com/sanskarpan/Ghostlight/internal/passport"
 	"github.com/sanskarpan/Ghostlight/internal/resource"
@@ -215,6 +216,9 @@ type Server struct {
 	// replay window, and the durable delivery inbox. Unset means this
 	// deployment does not serve the webhook route.
 	Intake *intake.Service
+	// Gates is the gate-run store. Unset means this deployment does not serve
+	// the gates routes.
+	Gates *gates.Store
 	// Room is the reviewer room.
 	Room *reviewer.Room
 	// Passports is the evidence passport registry.
@@ -288,6 +292,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.extendEnvironment(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "generations" && r.Method == http.MethodPost:
 		s.createGeneration(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "gates" && r.Method == http.MethodPost:
+		s.requestGateRun(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 3 && segments[0] == "v1" && segments[1] == "gates" && r.Method == http.MethodGet:
+		s.getGateRun(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -690,6 +698,88 @@ func (s *Server) createGeneration(w http.ResponseWriter, r *http.Request, princi
 		"resource_version": env.Version,
 		"status_url":       "/v1/environments/" + id,
 	}, requestID)
+}
+
+// gateRequestBody names the gate to run and asserts the policy digest.
+type gateRequestBody struct {
+	Kind         string `json:"kind"`
+	PolicyDigest string `json:"policy_digest"`
+}
+
+// requestGateRun serves POST /v1/environments/{id}/gates: a request for one
+// independent gate run, bound to the environment's exact generation.
+//
+// The candidate digest is computed by the server from the row's recorded
+// candidate set — a candidate identity the server did not compute is an
+// assertion wearing a digest's clothes. The policy digest is accepted as an
+// assertion, validated for shape and recorded as what was asserted.
+func (s *Server) requestGateRun(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Gates == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire a gate-run store", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeMutation("environments.gates.request", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	var in gateRequestBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the gate request shape", requestID)
+		return
+	}
+	if !gates.Allowed(gates.Kind(in.Kind)) {
+		s.fail(w, r, CodeUnprocessable, fmt.Sprintf("gate %q is not in the catalog; the allowed set is %v", in.Kind, gates.AllowedKinds()), requestID)
+		return
+	}
+	if in.PolicyDigest != "" && !digestShape(in.PolicyDigest) {
+		s.fail(w, r, CodeUnprocessable, "policy_digest must be a sha256:<64 hex> digest", requestID)
+		return
+	}
+	// The candidate digest covers the environment's exact candidate set: the
+	// source sha and both digests, in a canonical order, so a generation's
+	// identity is one digest and not three loose strings.
+	canonical := env.SourceSHA + "\n" + env.RecipeDigest + "\n" + env.ConfigurationDigest
+	candidateSum := sha256.Sum256([]byte(canonical))
+	candidate := "sha256:" + hex.EncodeToString(candidateSum[:])
+
+	run, err := s.Gates.Request(id, env.Scope, uint64(env.Generation),
+		gates.Kind(in.Kind), candidate, in.PolicyDigest)
+	if err != nil {
+		s.fail(w, r, CodeUnprocessable, err.Error(), requestID)
+		return
+	}
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"run_id":     run.ID,
+		"state":      string(run.State),
+		"generation": run.Generation,
+		"status_url": "/v1/gates/" + run.ID,
+	}, requestID)
+}
+
+// getGateRun serves GET /v1/gates/{run_id}: the run's §3 shape, as it is.
+// A requested run carries no result and no invariant outcomes — §3's result
+// vocabulary belongs to a trusted agent, and none is wired, so the record
+// says "requested" and stops.
+func (s *Server) getGateRun(w http.ResponseWriter, r *http.Request, principal contract.Principal, id, requestID string) {
+	if s.Gates == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire a gate-run store", requestID)
+		return
+	}
+	run, err := s.Gates.Get(id)
+	if err != nil {
+		s.fail(w, r, CodeNotFound, "no such gate run", requestID)
+		return
+	}
+	if err := s.authorizeScope("gates.get", principal, run.Scope); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	s.write(w, r, http.StatusOK, run, requestID)
 }
 
 // githubWebhook serves POST /v1/integrations/github/events: exact-byte
