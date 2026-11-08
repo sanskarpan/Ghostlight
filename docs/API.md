@@ -11,6 +11,7 @@ The route-reality test (`cmd/server/api_reality_test.go`) enforces this table ag
 | `POST /v1/environments` | **served** |
 | `GET /v1/environments/{id}` | **served** |
 | `POST /v1/environments/{id}/destroy` | **served** |
+| `GET /v1/environments/{id}/resources` | **served** |
 | `GET /v1/environments/{id}/review-threads` | **served** |
 | `POST /v1/environments/{id}/review-threads` | **served** |
 | `POST /v1/review-threads/{id}/findings` | **served** |
