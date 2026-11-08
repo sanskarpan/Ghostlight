@@ -360,8 +360,11 @@ func looksLikeImageReference(s string) bool {
 	}
 	if strings.Contains(s, "/") {
 		// A path is a reference whether or not it carries a tag: an untagged
-		// name means latest.
-		return true
+		// name means latest. But only if the string is shaped like a registry
+		// name at all — lowercase alphanumerics with . _ - / : separators.
+		// Arbitrary base64 carries uppercase and +/ = and is not a name a
+		// registry would serve.
+		return isRegistryPathShape(s)
 	}
 	name, tag, found := strings.Cut(s, ":")
 	if !found || tag == "" {
@@ -374,6 +377,19 @@ func looksLikeImageReference(s string) bool {
 	}
 	first := name[0]
 	return first >= 'a' && first <= 'z'
+}
+
+// isRegistryPathShape reports whether every character of s is one a registry
+// name may carry.
+func isRegistryPathShape(s string) bool {
+	for _, c := range s {
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-' || c == '/' || c == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // isDigestForm reports whether s is an algorithm-qualified hex digest
