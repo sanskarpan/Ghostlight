@@ -88,7 +88,10 @@ func Start(t *testing.T) Container {
 		"  username=\"controller-1\" password=\"" + ControllerPassword + "\";\n" +
 		"};\n"
 	jaasPath := filepath.Join(dir, "jaas.conf")
-	if err := os.WriteFile(jaasPath, []byte(jaas), 0o600); err != nil {
+	// 0o644, not 0o600: the container reads these as its appuser, and a
+	// runner-owned 0600 file is unreadable to it (measured on CI, where the
+	// Windows host masked this locally).
+	if err := os.WriteFile(jaasPath, []byte(jaas), 0o644); err != nil {
 		t.Fatalf("write jaas: %v", err)
 	}
 
@@ -114,7 +117,7 @@ func Start(t *testing.T) Container {
 		"num.partitions=1\n" +
 		"default.replication.factor=1\n"
 	propsPath := filepath.Join(dir, "server.properties")
-	if err := os.WriteFile(propsPath, []byte(props), 0o600); err != nil {
+	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		t.Fatalf("write server.properties: %v", err)
 	}
 
