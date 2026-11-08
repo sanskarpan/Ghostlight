@@ -33,6 +33,13 @@ type Environment struct {
 	Generation int
 	// ExpiresAt is when the environment's TTL ends.
 	ExpiresAt time.Time
+	// SourceSHA, RecipeDigest and ConfigurationDigest are the exact candidate
+	// set the environment's current generation runs: a new generation names a
+	// new exact set, and the digests are the identity, not a description.
+	// Console-created environments carry zeros until a generation names them.
+	SourceSHA           string
+	RecipeDigest        string
+	ConfigurationDigest string
 	// Actions are the recorded actions the progress timeline is derived from.
 	//
 	// The timeline is not derivable from the lifecycle state, and the console
@@ -279,6 +286,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.destroyEnvironment(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "extend" && r.Method == http.MethodPost:
 		s.extendEnvironment(w, r, principal, segments[2], body, requestID)
+	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "generations" && r.Method == http.MethodPost:
+		s.createGeneration(w, r, principal, segments[2], body, requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "resources" && r.Method == http.MethodGet:
 		s.listEnvironmentResources(w, r, principal, segments[2], requestID)
 	case len(segments) == 4 && segments[0] == "v1" && segments[1] == "environments" && segments[3] == "review-threads" && r.Method == http.MethodGet:
@@ -618,6 +627,69 @@ func (s *Server) rememberIdempotentResult(key, digest, envID, result string) {
 	}); ok {
 		store.RememberIdempotentResult(key, digest, envID, result)
 	}
+}
+
+// generationBody is a new generation's exact candidate set. It is the create
+// shape's provenance half: the candidate and configuration are named by
+// digest, because a generation is an identity, not a description.
+type generationBody struct {
+	SourceSHA           string `json:"source_sha"`
+	RecipeDigest        string `json:"recipe_digest"`
+	ConfigurationDigest string `json:"configuration_digest"`
+}
+
+// createGeneration serves POST /v1/environments/{id}/generations: a new
+// exact candidate/config for the environment.
+//
+// The rollout is serialized by the resource-version precondition: two
+// generation attempts against the same version conflict, and the loser
+// re-reads and retries. The response names the new version, which is the
+// one the next generation's precondition must carry.
+//
+// Gate invalidation is stated honestly: this deployment holds no gate runs,
+// so there is nothing to invalidate and nothing pretended — when a gate
+// store exists, the invalidation belongs here, before the response.
+func (s *Server) createGeneration(w http.ResponseWriter, r *http.Request, principal contract.Principal, id string, body []byte, requestID string) {
+	if s.Updater == nil {
+		s.fail(w, r, CodeInternal, "this deployment does not wire an environment updater", requestID)
+		return
+	}
+	env, ok := s.Environments.Get(id)
+	if !ok {
+		s.fail(w, r, CodeNotFound, "no such environment", requestID)
+		return
+	}
+	if err := s.authorizeMutation("environments.generations.create", principal, env, body, r); err != nil {
+		s.failFromError(w, r, err, requestID)
+		return
+	}
+	var in generationBody
+	if err := json.Unmarshal(body, &in); err != nil {
+		s.fail(w, r, CodeInvalid, "the body does not parse as the generation shape", requestID)
+		return
+	}
+	if !shaShape(in.SourceSHA) {
+		s.fail(w, r, CodeUnprocessable, "source_sha must be a 40-character lowercase git sha", requestID)
+		return
+	}
+	if !digestShape(in.RecipeDigest) || !digestShape(in.ConfigurationDigest) {
+		s.fail(w, r, CodeUnprocessable, "recipe_digest and configuration_digest must be sha256:<64 hex> digests; a digest that does not parse pins nothing", requestID)
+		return
+	}
+
+	env.Generation++
+	env.Version++
+	env.SourceSHA = in.SourceSHA
+	env.RecipeDigest = in.RecipeDigest
+	env.ConfigurationDigest = in.ConfigurationDigest
+	s.Updater.Update(env)
+
+	s.write(w, r, http.StatusAccepted, map[string]any{
+		"environment_id":   id,
+		"generation":       env.Generation,
+		"resource_version": env.Version,
+		"status_url":       "/v1/environments/" + id,
+	}, requestID)
 }
 
 // githubWebhook serves POST /v1/integrations/github/events: exact-byte
