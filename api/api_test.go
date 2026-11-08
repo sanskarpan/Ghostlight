@@ -610,6 +610,8 @@ func createServer(t *testing.T) (*Server, *MemoryEnvironments) {
 		CLIName: "environment resources", Scope: "repo:acme", Permission: "environment:read"})
 	add(contract.Operation{ID: "environments.extend", Method: contract.MethodPost, Path: "/environments/{id}/extend",
 		CLIName: "environment extend", Scope: "repo:acme", Permission: "environment:write"})
+	add(contract.Operation{ID: "environments.generations.create", Method: contract.MethodPost, Path: "/environments/{id}/generations",
+		CLIName: "environment generation create", Scope: "repo:acme", Permission: "environment:write"})
 	store := &MemoryEnvironments{}
 	s := &Server{
 		Auth: StaticAuthenticator{Tokens: map[string]contract.Principal{
@@ -1150,5 +1152,74 @@ func TestWebhookStoreFailureIsNotAcknowledged(t *testing.T) {
 	})
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestCreateGenerationNamesAnExactCandidateAndSerializesRollout: a new
+// generation is an identity — the digests are recorded on the row — and the
+// resource-version precondition is the rollout's serialization.
+func TestCreateGenerationNamesAnExactCandidateAndSerializesRollout(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 6, Generation: 2})
+
+	rec := do(t, s, http.MethodPost, "/v1/environments/env-1/generations", "token-ada",
+		`{"source_sha":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+		"recipe_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"configuration_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "6"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	env, _ := store.Get("env-1")
+	if env.Generation != 3 {
+		t.Errorf("generation = %d, want 3", env.Generation)
+	}
+	if env.Version != 7 {
+		t.Errorf("version = %d, want 7 — the response names the next generation's precondition", env.Version)
+	}
+	if env.SourceSHA == "" || env.RecipeDigest == "" || env.ConfigurationDigest == "" {
+		t.Error("the exact candidate set was not recorded on the row")
+	}
+	if !strings.Contains(rec.Body.String(), `"generation":3`) {
+		t.Errorf("the response does not name the new generation: %s", rec.Body.String())
+	}
+
+	// The rollout is serialized: a second attempt against the version the
+	// first one superseded conflicts, rather than racing the first.
+	loser := do(t, s, http.MethodPost, "/v1/environments/env-1/generations", "token-ada",
+		`{"source_sha":"b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0a1",
+		"recipe_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"configuration_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "6"})
+	if loser.Code != http.StatusConflict {
+		t.Errorf("a generation against a superseded version: %d, want 409", loser.Code)
+	}
+}
+
+// TestCreateGenerationValidatesTheCandidateSet: a digest that does not parse
+// pins nothing, and an unparseable generation is refused, not guessed.
+func TestCreateGenerationValidatesTheCandidateSet(t *testing.T) {
+	s, store := createServer(t)
+	store.Add(Environment{ID: "env-1", Scope: "repo:acme", Version: 1, Generation: 1})
+
+	bad := do(t, s, http.MethodPost, "/v1/environments/env-1/generations", "token-ada",
+		`{"source_sha":"nope",
+		"recipe_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"configuration_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`,
+		map[string]string{"Idempotency-Key": "key-1", "If-Match": "1"})
+	if bad.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a bad source sha: %d, want 422", bad.Code)
+	}
+	env, _ := store.Get("env-1")
+	if env.Generation != 1 || env.Version != 1 {
+		t.Errorf("a refused generation moved the row: generation=%d version=%d", env.Generation, env.Version)
+	}
+	unknown := do(t, s, http.MethodPost, "/v1/environments/env-nope/generations", "token-ada",
+		`{"source_sha":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+		"recipe_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"configuration_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`,
+		map[string]string{"Idempotency-Key": "key-2", "If-Match": "1"})
+	if unknown.Code != http.StatusNotFound {
+		t.Errorf("a generation for an unknown environment: %d, want 404", unknown.Code)
 	}
 }

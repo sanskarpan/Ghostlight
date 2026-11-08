@@ -14,6 +14,7 @@ The route-reality test (`cmd/server/api_reality_test.go`) enforces this table ag
 | `GET /v1/environments/{id}/resources` | **served** |
 | `POST /v1/environments/{id}/extend` | **served** |
 | `POST /v1/integrations/github/events` | **served** |
+| `POST /v1/environments/{id}/generations` | **served** |
 | `GET /v1/environments/{id}/review-threads` | **served** |
 | `POST /v1/environments/{id}/review-threads` | **served** |
 | `POST /v1/review-threads/{id}/findings` | **served** |
